@@ -1,0 +1,16 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# PyInstaller build output
+build/
+dist/
+*.spec
+
+# Binary files
+*.exe
+*.rar
+*.zip
+*.wav
+# Logs
+*.log
