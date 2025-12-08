@@ -5,118 +5,18 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, 
     QListWidget, QListWidgetItem, QColorDialog, QCheckBox, 
     QMessageBox, QDoubleSpinBox, QLabel, QGroupBox, QFormLayout,
-    QInputDialog, QSlider, QFileDialog
+    QInputDialog, QSlider, QFileDialog, QRadioButton, QButtonGroup,
+    QSpinBox
 )
 from PySide6.QtGui import QColor, QFont, QPainter, QBrush, QPen, QCursor
 from PySide6.QtCore import Qt, QTimer, Signal, QRectF, QSize
 from collections import Counter
 from wheel_window import WheelWindow
 from utils import resource_path
+from calibration_dialog import ImageCalibrationDialog
 
 SETTINGS_FILE = resource_path("settings.json")
 
-class ProbabilityBar(QWidget):
-    """機率條元件，顯示各選項的權重比例"""
-    weights_changed = Signal()
-
-    def __init__(self, parent=None):
-        super().__init__()
-        self.items = []
-        self.drag_index = -1
-        self.setMinimumHeight(40)
-        self.setMaximumHeight(60)
-        self.setCursor(Qt.ArrowCursor)
-
-    def paintEvent(self, event):
-        """繪製機率條"""
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        
-        rect = self.rect()
-        total_weight = sum(item['weight'] for item in self.items)
-        if total_weight <= 0:
-            return
-
-        current_x = 0.0
-        width = rect.width()
-        
-        for i, item in enumerate(self.items):
-            segment_width = (item['weight'] / total_weight) * width
-            
-            painter.setBrush(QBrush(item['color']))
-            painter.setPen(Qt.NoPen)
-            painter.drawRect(QRectF(current_x, 0, segment_width, rect.height()))
-            
-            if i < len(self.items) - 1:
-                painter.setPen(QPen(Qt.white, 2))
-                painter.drawLine(current_x + segment_width, 0, current_x + segment_width, rect.height())
-                
-            current_x += segment_width
-
-    def mousePressEvent(self, event):
-        """滑鼠按下事件"""
-        if event.button() == Qt.LeftButton:
-            self.drag_index = self.get_separator_index(event.position().x())
-
-    def mouseMoveEvent(self, event):
-        """滑鼠移動事件"""
-        rect = self.rect()
-        width = rect.width()
-        
-        if self.get_separator_index(event.position().x()) != -1 or self.drag_index != -1:
-            self.setCursor(Qt.SplitHCursor)
-        else:
-            self.setCursor(Qt.ArrowCursor)
-
-        if self.drag_index != -1 and self.items:
-            total_weight = sum(item['weight'] for item in self.items)
-            
-            current_cum_weight = sum(self.items[k]['weight'] for k in range(self.drag_index + 1))
-            current_x_pos = (current_cum_weight / total_weight) * width
-            
-            delta_x = event.position().x() - current_x_pos
-            delta_weight = (delta_x / width) * total_weight
-            
-            current_item = self.items[self.drag_index]
-            next_item = self.items[self.drag_index + 1]
-            
-            new_w1 = current_item['weight'] + delta_weight
-            new_w2 = next_item['weight'] - delta_weight
-            
-            min_weight = total_weight * 0.005
-            
-            if new_w1 >= min_weight and new_w2 >= min_weight:
-                current_item['weight'] = new_w1
-                next_item['weight'] = new_w2
-                self.weights_changed.emit()
-                self.update()
-
-    def mouseReleaseEvent(self, event):
-        """滑鼠釋放事件"""
-        self.drag_index = -1
-        self.setCursor(Qt.ArrowCursor)
-
-    def get_separator_index(self, x):
-        """取得分隔線索引"""
-        if not self.items:
-            return -1
-        
-        rect = self.rect()
-        width = rect.width()
-        total_weight = sum(item['weight'] for item in self.items)
-        if total_weight <= 0:
-            return -1
-        
-        current_x = 0
-        threshold = 10
-        
-        for i in range(len(self.items) - 1):
-            segment_width = (self.items[i]['weight'] / total_weight) * width
-            current_x += segment_width
-            
-            if abs(x - current_x) <= threshold:
-                return i
-        return -1
 
 class ItemWidget(QWidget):
     """選項列表項目元件"""
@@ -232,7 +132,14 @@ class ConfigWindow(QWidget):
         self.sound_enabled = False
         self.finish_sound_enabled = False
         self.result_opacity = 150
+        self.result_opacity = 150
         self.pre_expand_width = 600
+        
+        self.wheel_mode = "classic" # "classic" or "image"
+        self.pointer_image_path = resource_path("ee.png")
+        self.pointer_angle_offset = 0
+        self.pointer_scale = 1.0
+        self.spin_speed_multiplier = 1.0 # Speed multiplier (1.0 = normal)
         
         self.init_ui()
         self.load_last_settings()
@@ -279,52 +186,120 @@ class ConfigWindow(QWidget):
         input_group.setLayout(input_layout)
         main_layout.addWidget(input_group)
 
+        # Style Settings Group (Standard GroupBox, no collapsible)
         style_group = QGroupBox("轉盤樣式設定")
         style_layout = QFormLayout()
         
+        # Wheel Mode
+        mode_layout = QHBoxLayout()
+        self.mode_classic_radio = QRadioButton("經典")
+        self.mode_image_radio = QRadioButton("圖片指針")
+        self.mode_group = QButtonGroup(self)
+        self.mode_group.addButton(self.mode_classic_radio)
+        self.mode_group.addButton(self.mode_image_radio)
+        self.mode_classic_radio.setChecked(True) 
+        self.mode_group.buttonClicked.connect(self.on_mode_changed)
+        mode_layout.addWidget(self.mode_classic_radio)
+        mode_layout.addWidget(self.mode_image_radio)
+        style_layout.addRow("轉盤模式:", mode_layout)
+        
+        # Image Selection
+        self.image_settings_widget = QWidget()
+        image_select_layout = QHBoxLayout(self.image_settings_widget)
+        image_select_layout.setContentsMargins(0, 0, 0, 0)
+        self.image_path_label = QLabel("未選擇圖片")
+        self.image_select_btn = QPushButton("選擇圖片...")
+        self.image_select_btn.clicked.connect(self.select_pointer_image)
+        self.calibrate_btn = QPushButton("圖片修正")
+        self.calibrate_btn.clicked.connect(self.open_calibration_dialog)
+        self.calibrate_btn.setEnabled(False)
+        image_select_layout.addWidget(self.image_path_label)
+        image_select_layout.addWidget(self.image_select_btn)
+        image_select_layout.addWidget(self.calibrate_btn)
+        style_layout.addRow("指針圖片:", self.image_settings_widget)
+        self.image_settings_widget.setVisible(False)
+        
+        # Line Settings (Border & Separator)
+        line_layout = QHBoxLayout()
+        # Border
+        self.border_check = QCheckBox("啟用邊框")
+        line_layout.addWidget(self.border_check)
+        
+        line_layout.addSpacing(15)
+        
+        # Separator (Moved to left of Border Color)
+        self.separator_check = QCheckBox("啟用分隔線 (同邊框色)")
+        self.separator_check.setChecked(True)
+        self.separator_check.stateChanged.connect(self.save_settings)
+        line_layout.addWidget(self.separator_check)
+
+        line_layout.addSpacing(15)
+
+        self.border_color_btn = QPushButton()
+        self.border_color_btn.setFixedSize(50, 20)
+        self.border_color_btn.clicked.connect(self.choose_border_color)
+        self.border_color_btn.setStyleSheet(f"background-color: {self.border_color.name()}")
+        line_layout.addWidget(self.border_color_btn)
+        
+        line_layout.addStretch()
+        
+        style_layout.addRow("線條設定:", line_layout)
+        
+        # Result Settings (Color & Opacity)
+        result_layout = QHBoxLayout()
+        
         self.result_color_btn = QPushButton("結果文字顏色")
+        self.result_color_btn.setFixedSize(100, 30)
         self.result_color_btn.clicked.connect(self.choose_result_color)
         self.update_result_color_btn()
-        
-        result_layout = QHBoxLayout()
         result_layout.addWidget(self.result_color_btn)
         
-        result_layout.addSpacing(10)
-        result_layout.addWidget(QLabel("背景透明度:"))
+        result_layout.addSpacing(15)
+        result_layout.addWidget(QLabel("背景不透明度:"))
         
         self.opacity_slider = QSlider(Qt.Horizontal)
         self.opacity_slider.setRange(0, 100)
-        self.opacity_slider.setFixedWidth(100)
         self.opacity_slider.setValue(60)
+        self.opacity_slider.setFixedWidth(100)
         self.opacity_slider.valueChanged.connect(self.on_opacity_changed)
         self.opacity_slider.sliderReleased.connect(self.save_settings)
+        result_layout.addWidget(self.opacity_slider)
         
         self.opacity_label = QLabel("60%")
-        
-        result_layout.addWidget(self.opacity_slider)
         result_layout.addWidget(self.opacity_label)
         result_layout.addStretch()
         
         style_layout.addRow("結果顯示:", result_layout)
         
-        border_layout = QHBoxLayout()
-        self.border_check = QCheckBox("顯示邊框")
-        self.border_check.setChecked(True)
-        self.border_check.stateChanged.connect(self.update_wheel_settings)
-        border_layout.addWidget(self.border_check)
+        # Font Size
+        font_layout = QHBoxLayout()
+        self.font_size_spin = QSpinBox()
+        self.font_size_spin.setRange(8, 72)
+        try:
+             val = getattr(self, 'wheel_font_size', 16)
+             self.font_size_spin.setValue(val)
+        except:
+             self.font_size_spin.setValue(16)
+        self.font_size_spin.valueChanged.connect(self.on_font_size_changed)
+        font_layout.addWidget(self.font_size_spin)
+        style_layout.addRow("轉盤文字大小:", font_layout)
+
+        # Spin Speed
+        speed_layout = QHBoxLayout()
+        self.speed_slider = QSlider(Qt.Horizontal)
+        self.speed_slider.setRange(50, 200)
+        self.speed_slider.setValue(100)
+        self.speed_slider.setFixedWidth(100)
+        self.speed_slider.valueChanged.connect(self.on_speed_changed)
+        self.speed_slider.sliderReleased.connect(self.save_settings)
+        speed_layout.addWidget(self.speed_slider)
+        self.speed_label = QLabel("1.0x")
+        self.speed_label.setFixedWidth(40)
+        speed_layout.addWidget(self.speed_label)
+        speed_layout.addStretch()
+        style_layout.addRow("旋轉速度:", speed_layout)
         
-        self.separator_check = QCheckBox("顯示分隔線")
-        self.separator_check.setChecked(True)
-        self.separator_check.stateChanged.connect(self.update_wheel_settings)
-        border_layout.addWidget(self.separator_check)
-        
-        self.border_color_btn = QPushButton("邊框顏色")
-        self.border_color_btn.clicked.connect(self.choose_border_color)
-        self.update_border_color_btn()
-        border_layout.addWidget(self.border_color_btn)
-        
-        style_layout.addRow("轉盤邊框:", border_layout)
-        
+        # Sound Settings
         sound_multi_layout = QHBoxLayout()
         
         self.sound_check = QCheckBox("啟用音效 (Tick)")
@@ -346,10 +321,11 @@ class ConfigWindow(QWidget):
         sound_multi_layout.addWidget(self.multi_spin_setup_btn)
         
         style_layout.addRow("音效:", sound_multi_layout)
-        
+
         style_group.setLayout(style_layout)
         main_layout.addWidget(style_group)
         
+        # --- List Group ---
         list_group = QGroupBox("選項列表 (雙擊編輯)")
         list_layout = QVBoxLayout()
         
@@ -517,6 +493,14 @@ class ConfigWindow(QWidget):
             self.multi_spin_setup_btn.setText("設定連抽")
             self.multi_spin_setup_btn.setStyleSheet("background-color: #673AB7;")
             return
+            
+        reply = QMessageBox.question(self, "準備連抽", "開始連抽前，是否清空目前的歷史紀錄？",
+                                   QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel, QMessageBox.No)
+                                   
+        if reply == QMessageBox.Cancel:
+            return
+        if reply == QMessageBox.Yes:
+            self.clear_history()
 
         from PySide6.QtWidgets import QInputDialog
         
@@ -833,7 +817,12 @@ class ConfigWindow(QWidget):
             "separator_enabled": self.separator_check.isChecked(),
             "sound_enabled": self.sound_check.isChecked(),
             "finish_sound_enabled": self.finish_sound_check.isChecked(),
-            "result_opacity": int(self.opacity_slider.value() * 2.55)
+            "result_opacity": int(self.opacity_slider.value() * 2.55),
+            "wheel_mode": self.wheel_mode,
+            "pointer_image_path": self.pointer_image_path,
+            "pointer_angle_offset": self.pointer_angle_offset,
+            "pointer_scale": self.pointer_scale,
+            "spin_speed_multiplier": self.spin_speed_multiplier
         }
         if last_file:
             settings["last_file"] = last_file
@@ -884,6 +873,29 @@ class ConfigWindow(QWidget):
                     slider_val = int(self.result_opacity / 2.55)
                     self.opacity_slider.setValue(slider_val)
                     self.opacity_label.setText(f"{slider_val}%")
+                
+                # Load New Settings
+                self.wheel_mode = settings.get('wheel_mode', 'classic')
+                self.pointer_image_path = settings.get('pointer_image_path', resource_path("ee.png"))
+                self.pointer_angle_offset = settings.get('pointer_angle_offset', 0)
+                self.pointer_scale = settings.get('pointer_scale', 1.0)
+                self.spin_speed_multiplier = settings.get('spin_speed_multiplier', 1.0)
+                
+                # Update speed slider
+                self.speed_slider.setValue(int(self.spin_speed_multiplier * 100))
+                self.speed_label.setText(f"{self.spin_speed_multiplier:.1f}x")
+                
+                if self.wheel_mode == 'image':
+                    self.mode_image_radio.setChecked(True)
+                    self.image_settings_widget.setVisible(True)
+                else:
+                    self.mode_classic_radio.setChecked(True)
+                    self.image_settings_widget.setVisible(False)
+                    
+                self.image_path_label.setText(os.path.basename(self.pointer_image_path))
+                
+                if self.pointer_image_path and os.path.exists(self.pointer_image_path):
+                     self.calibrate_btn.setEnabled(True)
                     
                 if "last_file" in settings and os.path.exists(settings["last_file"]):
                     with open(settings["last_file"], 'r', encoding='utf-8') as f:
@@ -932,6 +944,34 @@ class ConfigWindow(QWidget):
             self.multi_spin_setup_btn.setText("設定連抽")
             self.multi_spin_setup_btn.setStyleSheet("background-color: #673AB7;")
 
+    def on_mode_changed(self, button):
+        self.wheel_mode = "image" if self.mode_image_radio.isChecked() else "classic"
+        self.image_settings_widget.setVisible(self.wheel_mode == "image")
+        self.update_wheel_settings()
+        self.save_settings()
+
+    def select_pointer_image(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "選擇指針圖片", "", "Images (*.png *.jpg *.jpeg *.bmp)")
+        if file_path:
+            self.pointer_image_path = file_path
+            self.image_path_label.setText(os.path.basename(file_path))
+            self.calibrate_btn.setEnabled(True)
+            self.update_wheel_settings()
+            self.save_settings()
+
+    def open_calibration_dialog(self):
+        """開啟圖片修正視窗"""
+        active_items = [i for i in self.items if i.get('enabled', True)]
+        # Default placeholder item if none active, to let user see something
+        if not active_items:
+            active_items = [{'name': '測試', 'weight': 1, 'color': QColor('blue'), 'enabled': True}]
+
+        dialog = ImageCalibrationDialog(self, active_items, self.pointer_image_path, self.pointer_angle_offset, self.pointer_scale)
+        if dialog.exec():
+            self.pointer_angle_offset, self.pointer_scale = dialog.get_result()
+            self.update_wheel_settings()
+            self.save_settings()
+
     def update_wheel(self):
         """更新轉盤設定"""
         if self.wheel_window:
@@ -946,6 +986,13 @@ class ConfigWindow(QWidget):
                 self.finish_sound_check.isChecked(),
                 int(self.opacity_slider.value() * 2.55)
             )
+            # Apply new mode settings
+            self.wheel_window.set_mode(
+                self.wheel_mode,
+                self.pointer_image_path,
+                self.pointer_angle_offset,
+                self.pointer_scale
+            )
             
     def on_opacity_changed(self):
         """透明度滑桿改變時的回調"""
@@ -956,6 +1003,23 @@ class ConfigWindow(QWidget):
         if self.wheel_window:
             self.wheel_window.result_opacity = self.result_opacity
             self.wheel_window.preview_opacity()
+
+    def on_speed_changed(self):
+        """旋轉速度滑桿改變時的回調"""
+        val = self.speed_slider.value()
+        self.spin_speed_multiplier = val / 100.0
+        self.speed_label.setText(f"{self.spin_speed_multiplier:.1f}x")
+        
+        if self.wheel_window:
+            self.wheel_window.spin_speed_multiplier = self.spin_speed_multiplier
+
+    def on_font_size_changed(self):
+        """轉盤文字大小改變時的回調"""
+        val = self.font_size_spin.value()
+        self.wheel_font_size = val
+        if self.wheel_window:
+            self.wheel_window.font_size = val
+            self.wheel_window.update()
             
     def update_wheel_settings(self):
         """更新轉盤設定並儲存"""

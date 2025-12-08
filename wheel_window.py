@@ -1,7 +1,7 @@
 import math
 import random
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QApplication, QMessageBox, QLabel, QListWidget, QListWidgetItem, QHBoxLayout, QFrame
-from PySide6.QtGui import QPainter, QBrush, QPen, QColor, QPainterPath, QFont, QPolygonF, QCursor, QTextOption, QMouseEvent
+from PySide6.QtGui import QPainter, QBrush, QPen, QColor, QPainterPath, QFont, QPolygonF, QCursor, QTextOption, QMouseEvent, QPixmap, QTransform
 from PySide6.QtCore import Qt, QPointF, QRectF, QPropertyAnimation, QEasingCurve, Property, Signal, QRect, QTimer, QSize, QTime
 import winsound
 import os
@@ -104,6 +104,30 @@ class WheelWindow(QWidget):
         self.text_doc_option = QTextOption()
         self.text_doc_option.setWrapMode(QTextOption.WordWrap)
         self.text_doc_option.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        
+        # New Feature: Image Pointer Mode
+        self.wheel_mode = "classic"
+        self.pointer_image_path = ""
+        self.pointer_pixmap = None
+        self.pointer_angle_offset = 0
+        self.pointer_scale = 1.0
+        self.spin_speed_multiplier = 1.0 # Speed multiplier
+
+    def set_mode(self, mode, image_path, angle_offset, scale=1.0):
+        """設定轉盤模式"""
+        self.wheel_mode = mode
+        self.pointer_image_path = image_path
+        self.pointer_angle_offset = angle_offset
+        self.pointer_scale = scale
+        self.load_pointer_image()
+        self.update()
+
+    def load_pointer_image(self):
+        """載入指針圖片"""
+        if self.pointer_image_path and os.path.exists(self.pointer_image_path):
+            self.pointer_pixmap = QPixmap(self.pointer_image_path)
+        else:
+            self.pointer_pixmap = None
 
     def load_tick_sound(self):
         """載入滴答音效"""
@@ -169,7 +193,15 @@ class WheelWindow(QWidget):
         self._rotation_angle = angle
         
         if self.sound_enabled:
-            effective_angle = (0 - angle) % 360
+            # Calculate effective pointer angle relative to the wheel
+            if self.wheel_mode == "image":
+                # Image Mode: Unified Logic: Pointer Angle = (90 + Rotation + Offset) % 360
+                # Base 90 (North) ensures default starts at Top.
+                effective_angle = (90 + angle + self.pointer_angle_offset) % 360
+            else:
+                # Classic Mode: Wheel rotates. Pointer is static at 0 (East).
+                effective_angle = (0 - angle) % 360
+                
             total_weight = sum(item['weight'] for item in self.items)
             if total_weight > 0:
                 current_angle_iter = 0
@@ -238,11 +270,23 @@ class WheelWindow(QWidget):
         """開始旋轉"""
         self.result_text = ""
         self.spin_speed_mult = speed_multiplier
-        self.rotation_speed = random.uniform(20.0, 35.0) * speed_multiplier
-        self.deceleration = random.uniform(0.15, 0.25) * (speed_multiplier * 0.5)
+        # Apply user-configured speed multiplier to rotation speed
+        base_speed = random.uniform(20.0, 35.0)
+        self.rotation_speed = base_speed * speed_multiplier * self.spin_speed_multiplier
+        # Deceleration Logic for "Faster Spin, Shorter Duration"
+        # If multiplier > 1 (Fast), we want it to stop faster -> Higher deceleration.
+        # If multiplier < 1 (Slow), we want it to spin longer/slower -> Lower deceleration.
         
-        if speed_multiplier > 1.0:
-            self.deceleration *= speed_multiplier
+        # Deceleration Logic:
+        # User wants "Faster Speed = Shorter Duration".
+        # Duration ~ Speed / Decel.
+        # If Decel scales with Speed^2, then Duration ~ Speed / Speed^2 ~ 1/Speed.
+        # This gives a linear inverse relationship (Duration reduces as Speed increases).
+        
+        base_decel = random.uniform(0.15, 0.25)
+        
+        # Scaling deceleration by multiplier^2 effectively shortens the spin time for higher speeds.
+        self.deceleration = base_decel * (speed_multiplier ** 2.0)
         
         self.is_spinning = True
         self.timer.start(25)
@@ -267,17 +311,27 @@ class WheelWindow(QWidget):
     def on_spin_finished(self):
         """旋轉結束處理"""
         final_angle = self._rotation_angle
-        effective_angle = (0 - final_angle) % 360
+        if self.wheel_mode == "image":
+             # Image Mode: Unified Logic (90 base). 
+             # Logic Line (Winner) is pure rotation. Offset only affects Image Visual.
+             effective_angle = (90 + final_angle) % 360
+        else:
+             # Classic Mode: Pointer at 0 (East)
+             effective_angle = (0 - final_angle) % 360
+        
         current_angle = 0
         total_weight = sum(item['weight'] for item in self.items)
         
         winner_name = ""
         for item in self.items:
             span_angle = (item['weight'] / total_weight) * 360
+            
+            # Check range
             if current_angle <= effective_angle < current_angle + span_angle:
                 winner_name = item['name']
                 break
             current_angle += span_angle
+            
             
         print(f"WH: {winner_name}")
         self.result_text = f"{winner_name} "
@@ -308,7 +362,14 @@ class WheelWindow(QWidget):
         if total_weight <= 0:
             return
 
-        start_angle = self._rotation_angle
+        # Rotation Mode Check
+        if self.wheel_mode == "image":
+            # Image Mode: Wheel Start Angle is fixed 0. 
+            # Pointer Image rotates.
+            start_angle = 0 # Fixed background
+        else:
+            # Classic Mode: Wheel rotates.
+            start_angle = self._rotation_angle
         
         if self.border_enabled:
             painter.setBrush(Qt.NoBrush)
@@ -381,14 +442,54 @@ class WheelWindow(QWidget):
             start_angle += span_angle
             separator_angles.append(start_angle % 360)
 
+        # Draw Image Pointer
+
+        if self.wheel_mode == "image" and self.pointer_pixmap:
+            painter.save()
+            painter.translate(center)
+            
+            # Unified Visual Rotation
+            # Pointer Angle = (90 + Rotation + Offset) % 360
+            # Visual Rotation = -Pointer Angle (CCW -> CW for Painter)
+            # Unified Visual Rotation
+            # Pointer Angle = (90 + Rotation + Offset) % 360
+            image_angle = (90 + self._rotation_angle + self.pointer_angle_offset) % 360
+            painter.rotate(-image_angle)
+            
+            # Align Image Top to local X-axis (Green Line/Logic direction relative to itself)
+            # Image Top is local -Y. rotate(90) CW moves -Y to +X.
+            painter.rotate(90)
+            
+            # Draw image centered
+            target_h = radius * 1.0 * getattr(self, 'pointer_scale', 1.0)
+            target_w = target_h * (self.pointer_pixmap.width() / self.pointer_pixmap.height())
+            
+            painter.drawPixmap(QRectF(-target_w/2, -target_h/2, target_w, target_h), self.pointer_pixmap, self.pointer_pixmap.rect())
+            
+            painter.restore()
+
+            # DEBUG: Draw Logic Line (Green)
+            # Logic Line represents "Winner Detection Angle".
+            # This depends ONLY on Rotation (Invariant North).
+            logic_angle = (90 + self._rotation_angle) % 360
+            
+            painter.save()
+            painter.translate(center)
+            painter.rotate(-logic_angle)
+            painter.setPen(QPen(Qt.green, 5)) 
+            painter.drawLine(0, 0, radius, 0)
+            painter.restore()
+
         if self.edit_mode and len(self.items) > 1:
             for i, angle in enumerate(separator_angles):
                 if i == len(self.items) - 1:
                     continue
+                
                 rad = math.radians(angle)
                 hx = center.x() + radius * math.cos(rad)
                 hy = center.y() - radius * math.sin(rad)
                 painter.setPen(Qt.NoPen)
+                
                 if i == self.hover_separator_index or i == self.drag_separator_index:
                     painter.setBrush(Qt.yellow)
                     handle_size = 14
@@ -397,7 +498,7 @@ class WheelWindow(QWidget):
                     handle_size = 10
                 painter.drawEllipse(QPointF(hx, hy), handle_size, handle_size)
 
-        if not self.edit_mode:
+        if not self.edit_mode and self.wheel_mode != "image":
             pointer_size = 25
             pointer_fill = QColor(255, 69, 0)
             painter.setBrush(QBrush(pointer_fill))
@@ -407,17 +508,18 @@ class WheelWindow(QWidget):
             p3 = QPointF(center.x() + radius + pointer_size, center.y() + 15)
             painter.drawPolygon(QPolygonF([p1, p2, p3]))
         
-        painter.setBrush(QBrush(Qt.white))
-        painter.setPen(QPen(Qt.black, 2))
-        painter.drawEllipse(center, 30, 30)
-        
-        painter.setPen(Qt.black)
-        font = painter.font()
-        font.setPointSize(10)
-        font.setBold(True)
-        painter.setFont(font)
-        btn_text = "關閉" if self.edit_mode else "GO"
-        painter.drawText(QRectF(center.x() - 30, center.y() - 30, 60, 60), Qt.AlignCenter, btn_text)
+        if self.wheel_mode != "image" or self.edit_mode:
+            painter.setBrush(QBrush(Qt.white))
+            painter.setPen(QPen(Qt.black, 2))
+            painter.drawEllipse(center, 30, 30)
+            
+            painter.setPen(Qt.black)
+            font = painter.font()
+            font.setPointSize(10)
+            font.setBold(True)
+            painter.setFont(font)
+            btn_text = "關閉" if self.edit_mode else "GO"
+            painter.drawText(QRectF(center.x() - 30, center.y() - 30, 60, 60), Qt.AlignCenter, btn_text)
         
         should_show_box = False
         box_text = ""
@@ -448,6 +550,27 @@ class WheelWindow(QWidget):
             painter.setFont(font)
             painter.drawText(box_rect, Qt.AlignCenter, box_text)
 
+        # DEBUG: Show live winner detection
+        # Calculate current winner on the fly
+        if self.wheel_mode == "image":
+             curr_angle = (90 + self._rotation_angle + self.pointer_angle_offset) % 360
+        else:
+             curr_angle = (0 - self._rotation_angle) % 360
+        
+        curr_winner = ""
+        c_iter = 0
+        tot_w = sum(i['weight'] for i in self.items)
+        if tot_w > 0:
+            for i in self.items:
+                sp = (i['weight']/tot_w)*360
+                if c_iter <= curr_angle < c_iter+sp:
+                    curr_winner = i['name']
+                    break
+                c_iter += sp
+        
+        painter.setPen(QPen(Qt.red, 2))
+        painter.drawText(center.x() - 100, center.y() + radius + 20, 200, 30, Qt.AlignCenter, f"Debug: {curr_winner}")
+
         if not self.edit_mode and self.show_resize_grip:
             grip_radius = 10
             gx = rect.width() - 20
@@ -459,6 +582,9 @@ class WheelWindow(QWidget):
 
     def mousePressEvent(self, event):
         """滑鼠按下事件"""
+        if self.is_spinning:
+            return
+
         self.reset_grip_timer()
         if event.button() == Qt.RightButton:
             self.hide_grip()
@@ -473,11 +599,27 @@ class WheelWindow(QWidget):
                     return
 
             if hasattr(self, 'wheel_center'):
-                if (event.position().x() - self.wheel_center.x())**2 + (event.position().y() - self.wheel_center.y())**2 < 30**2:
-                    if self.edit_mode:
+                dist_sq = (event.position().x() - self.wheel_center.x())**2 + (event.position().y() - self.wheel_center.y())**2
+                
+                # Check based on mode
+                clicked = False
+                if self.edit_mode:
+                    if dist_sq < 30**2: # Close button
                         self.close()
-                    else:
-                        self.spin()
+                        return
+                elif self.wheel_mode == "image":
+                    # Check if clicked inside image (approx radius * 0.5)
+                    # Image height is radius * 1.0, so half height is radius * 0.5
+                    if hasattr(self, 'wheel_radius'):
+                        click_radius = self.wheel_radius * 0.5
+                        if dist_sq < click_radius**2:
+                            clicked = True
+                else: # Classic mode GO button
+                    if dist_sq < 30**2:
+                        clicked = True
+                
+                if clicked:
+                    self.spin()
                     return
 
             if self.edit_mode:
