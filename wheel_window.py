@@ -176,12 +176,12 @@ class WheelWindow(QWidget):
         self.show_resize_grip = True
         self.update()
         self.reset_grip_timer()
-        
+
     def reset_grip_timer(self):
         """重置控制點計時器"""
         self.grip_timer.start()
 
-    def update_settings(self, items, border_enabled, border_color, result_color, result_bg_color, separator_enabled=True, sound_enabled=False, finish_sound_enabled=False, result_opacity=150):
+    def update_settings(self, items, border_enabled, border_color, result_color, result_bg_color, separator_enabled=True, sound_enabled=False, finish_sound_enabled=False, result_opacity=150, show_pointer_line=True):
         """更新轉盤設定"""
         self.items = items
         self.border_enabled = border_enabled
@@ -192,11 +192,8 @@ class WheelWindow(QWidget):
         self.sound_enabled = sound_enabled
         self.finish_sound_enabled = finish_sound_enabled
         self.result_opacity = result_opacity
+        self.show_pointer_line = show_pointer_line
         self.update()
-
-    def get_rotation_angle(self):
-        """取得旋轉角度"""
-        return self._rotation_angle
 
     def set_rotation_angle(self, angle):
         """設定旋轉角度並處理音效"""
@@ -482,12 +479,13 @@ class WheelWindow(QWidget):
 
             logic_angle = (90 + self._rotation_angle) % 360
             
-            painter.save()
-            painter.translate(center)
-            painter.rotate(-logic_angle)
-            painter.setPen(QPen(Qt.green, 5)) 
-            painter.drawLine(0, 0, radius, 0)
-            painter.restore()
+            if getattr(self, 'show_pointer_line', True):
+                painter.save()
+                painter.translate(center)
+                painter.rotate(-logic_angle)
+                painter.setPen(QPen(Qt.green, 5)) 
+                painter.drawLine(0, 0, radius, 0)
+                painter.restore()
 
         if self.edit_mode and len(self.items) > 1:
             for i, angle in enumerate(separator_angles):

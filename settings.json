@@ -1,15 +1,19 @@
 {
-    "result_text_color": "#f0d5ff",
+    "result_text_color": "#c7cbff",
+    "result_bg_color": "#ff0004",
     "border_enabled": true,
     "border_color": "#52abff",
     "separator_enabled": true,
     "sound_enabled": true,
     "finish_sound_enabled": true,
-    "result_opacity": 254,
+    "result_opacity": 153,
     "wheel_mode": "image",
     "pointer_image_path": "C:\\Users\\yukip\\Desktop\\WHEE\\ee.png",
-    "pointer_angle_offset": 333,
-    "pointer_scale": 0.34,
-    "spin_speed_multiplier": 2.0,
-    "last_file": 2
+    "pointer_angle_offset": 335,
+    "pointer_scale": 0.68,
+    "spin_speed_multiplier": 1.98,
+    "classic_pointer_angle": 45,
+    "center_text": "GO",
+    "show_pointer_line": true,
+    "last_file": "C:/Users/yukip/Desktop/WHEE/1.json"
 }

@@ -187,6 +187,7 @@ class ConfigWindow(QWidget):
         self.spin_speed_multiplier = 1.0 # 速度倍率 (1.0 = 正常)
         self.classic_pointer_angle = 0
         self.center_text = "GO"
+        self.show_pointer_line = True
         
         self.init_ui()
         self.load_last_settings()
@@ -269,6 +270,14 @@ class ConfigWindow(QWidget):
         self.calibrate_btn.clicked.connect(self.open_calibration_dialog)
         self.calibrate_btn.setEnabled(False)
         image_mode_layout.addWidget(self.calibrate_btn)
+        
+        self.pointer_line_btn = QPushButton("輔助線: 開")
+        self.pointer_line_btn.setCheckable(True)
+        self.pointer_line_btn.setChecked(True)
+        self.pointer_line_btn.clicked.connect(self.toggle_pointer_line)
+        self.pointer_line_btn.setStyleSheet("background-color: #4CAF50; color: white;")
+        image_mode_layout.addWidget(self.pointer_line_btn)
+        
         image_mode_layout.addStretch()
         
         style_layout.addRow(self.image_mode_container)
@@ -328,13 +337,13 @@ class ConfigWindow(QWidget):
         
         self.result_color_btn = QPushButton("結果文字顏色")
         self.result_color_btn.clicked.connect(self.choose_result_color)
-        self.result_color_btn.setMinimumWidth(130)  # Ensure text fits
+        self.result_color_btn.setMinimumWidth(115)  # Ensure text fits
         self.update_result_color_btn()
         result_layout.addWidget(self.result_color_btn)
         
         self.result_bg_color_btn = QPushButton("結果背景顏色")
         self.result_bg_color_btn.clicked.connect(self.choose_result_bg_color)
-        self.result_bg_color_btn.setMinimumWidth(130)  # Ensure text fits
+        self.result_bg_color_btn.setMinimumWidth(115)  # Ensure text fits
         self.update_result_bg_color_btn()
         result_layout.addWidget(self.result_bg_color_btn)
         
@@ -912,7 +921,9 @@ class ConfigWindow(QWidget):
             "pointer_scale": self.pointer_scale,
             "spin_speed_multiplier": self.spin_speed_multiplier,
             "classic_pointer_angle": self.classic_pointer_angle,
-            "center_text": self.center_text
+            "classic_pointer_angle": self.classic_pointer_angle,
+            "center_text": self.center_text,
+            "show_pointer_line": self.show_pointer_line
         }
         if last_file:
             settings["last_file"] = last_file
@@ -976,7 +987,11 @@ class ConfigWindow(QWidget):
                 self.spin_speed_multiplier = settings.get('spin_speed_multiplier', 1.0)
                 
                 self.classic_pointer_angle = settings.get('classic_pointer_angle', 0)
+                self.classic_pointer_angle = settings.get('classic_pointer_angle', 0)
                 self.center_text = settings.get('center_text', "GO")
+                self.show_pointer_line = settings.get('show_pointer_line', True)
+                
+                self.update_pointer_line_btn_state()
                 
                 # 恢復 UI 狀態
                 angle_index = self.classic_pointer_angle // 45
@@ -1082,7 +1097,26 @@ class ConfigWindow(QWidget):
         if dialog.exec():
             self.pointer_angle_offset, self.pointer_scale = dialog.get_result()
             self.update_wheel_settings()
+            self.pointer_angle_offset, self.pointer_scale = dialog.get_result()
+            self.update_wheel_settings()
             self.save_settings()
+
+    def toggle_pointer_line(self):
+        """切換綠線顯示"""
+        self.show_pointer_line = self.pointer_line_btn.isChecked()
+        self.update_pointer_line_btn_state()
+        self.update_wheel_settings()
+        self.save_settings()
+
+    def update_pointer_line_btn_state(self):
+        """更新綠線按鈕狀態"""
+        self.pointer_line_btn.setChecked(self.show_pointer_line)
+        if self.show_pointer_line:
+            self.pointer_line_btn.setText("輔助線: 開")
+            self.pointer_line_btn.setStyleSheet("background-color: #4CAF50; color: white;")
+        else:
+            self.pointer_line_btn.setText("輔助線: 關")
+            self.pointer_line_btn.setStyleSheet("background-color: #f44336; color: white;")
 
     def update_wheel(self):
         """更新轉盤設定"""
@@ -1097,7 +1131,9 @@ class ConfigWindow(QWidget):
                 self.separator_check.isChecked(),
                 self.sound_check.isChecked(),
                 self.finish_sound_check.isChecked(),
-                int(self.opacity_slider.value() * 2.55)
+
+                int(self.opacity_slider.value() * 2.55),
+                self.show_pointer_line
             )
             self.wheel_window.set_classic_settings(self.classic_pointer_angle, self.center_text)
             # 應用新的模式設定
