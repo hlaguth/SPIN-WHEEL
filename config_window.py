@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QListWidget, QListWidgetItem, QColorDialog, QCheckBox, 
     QMessageBox, QDoubleSpinBox, QLabel, QGroupBox, QFormLayout,
     QInputDialog, QSlider, QFileDialog, QRadioButton, QButtonGroup,
-    QSpinBox
+    QSpinBox, QComboBox
 )
 from PySide6.QtGui import QColor, QFont, QPainter, QBrush, QPen, QCursor
 from PySide6.QtCore import Qt, QTimer, Signal, QRectF, QSize
@@ -17,6 +17,50 @@ from calibration_dialog import ImageCalibrationDialog
 
 SETTINGS_FILE = resource_path("settings.json")
 
+
+class CollapsibleBox(QWidget):
+    """可收合的區塊元件"""
+    def __init__(self, title="", parent=None):
+        super().__init__(parent)
+        self.title = title
+        self.toggle_btn = QPushButton(f"▼ {title}")
+        self.toggle_btn.setCheckable(True)
+        self.toggle_btn.setChecked(True)
+        self.toggle_btn.setStyleSheet("""
+            QPushButton {
+                text-align: left; 
+                background-color: #333; 
+                color: white;
+                border: 1px solid #555;
+                padding: 8px;
+                font-weight: bold;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #555;
+            }
+        """)
+        self.toggle_btn.toggled.connect(self.on_toggled)
+
+        self.content_area = QWidget()
+        self.content_layout = QVBoxLayout()
+        self.content_layout.setContentsMargins(10, 10, 10, 10)
+        self.content_area.setLayout(self.content_layout)
+        
+        lay = QVBoxLayout()
+        lay.setSpacing(0)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(self.toggle_btn)
+        lay.addWidget(self.content_area)
+        self.setLayout(lay)
+        
+    def on_toggled(self, checked):
+        self.content_area.setVisible(checked)
+        arrow = "▼" if checked else "▶"
+        self.toggle_btn.setText(f"{arrow} {self.title}")
+
+    def setContentLayout(self, layout):
+        self.content_layout.addLayout(layout)
 
 class ItemWidget(QWidget):
     """選項列表項目元件"""
@@ -34,7 +78,7 @@ class ItemWidget(QWidget):
         
         text = f"{name} (W: {weight:.1f} | P: {prob:.1f}%)"
         self.info_lbl = QLabel(text)
-        self.info_lbl.setStyleSheet("font-size: 14px; font-weight: bold;")
+        self.info_lbl.setStyleSheet("font-size: 10pt; font-weight: bold;")
         layout.addWidget(self.info_lbl)
         
         layout.addStretch()
@@ -61,7 +105,7 @@ class ConfigWindow(QWidget):
         self.setStyleSheet("""
             QWidget {
                 font-family: "Microsoft JhengHei", sans-serif;
-                font-size: 14px;
+                font-size: 12pt;
             }
             QPushButton {
                 background-color: #4CAF50; 
@@ -127,6 +171,7 @@ class ConfigWindow(QWidget):
         self.auto_spin_speed = 3.0
         
         self.result_text_color = QColor(255, 255, 255)
+        self.result_bg_color = QColor(0, 0, 0)
         self.border_enabled = True
         self.border_color = QColor(255, 255, 255)
         self.sound_enabled = False
@@ -135,11 +180,13 @@ class ConfigWindow(QWidget):
         self.result_opacity = 150
         self.pre_expand_width = 600
         
-        self.wheel_mode = "classic" # "classic" or "image"
+        self.wheel_mode = "classic" # "classic" 或 "image"
         self.pointer_image_path = resource_path("ee.png")
         self.pointer_angle_offset = 0
         self.pointer_scale = 1.0
-        self.spin_speed_multiplier = 1.0 # Speed multiplier (1.0 = normal)
+        self.spin_speed_multiplier = 1.0 # 速度倍率 (1.0 = 正常)
+        self.classic_pointer_angle = 0
+        self.center_text = "GO"
         
         self.init_ui()
         self.load_last_settings()
@@ -150,7 +197,7 @@ class ConfigWindow(QWidget):
         main_layout.setSpacing(15)
         main_layout.setContentsMargins(20, 20, 20, 20)
         
-        input_group = QGroupBox("新增/編輯選項")
+        input_group = CollapsibleBox("新增/編輯選項")
         input_layout = QFormLayout()
         
         self.name_input = QLineEdit()
@@ -183,14 +230,14 @@ class ConfigWindow(QWidget):
         self.cancel_edit_btn.setStyleSheet("background-color: #9E9E9E;")
         input_layout.addRow(self.cancel_edit_btn)
         
-        input_group.setLayout(input_layout)
+        input_group.setContentLayout(input_layout)
         main_layout.addWidget(input_group)
 
-        # Style Settings Group (Standard GroupBox, no collapsible)
-        style_group = QGroupBox("轉盤樣式設定")
+        # 樣式設定群組 (使用自訂 CollapsibleBox)
+        style_group = CollapsibleBox("轉盤樣式設定")
         style_layout = QFormLayout()
         
-        # Wheel Mode
+        # 轉盤模式
         mode_layout = QHBoxLayout()
         self.mode_classic_radio = QRadioButton("經典")
         self.mode_image_radio = QRadioButton("圖片指針")
@@ -203,31 +250,62 @@ class ConfigWindow(QWidget):
         mode_layout.addWidget(self.mode_image_radio)
         style_layout.addRow("轉盤模式:", mode_layout)
         
-        # Image Selection
-        self.image_settings_widget = QWidget()
-        image_select_layout = QHBoxLayout(self.image_settings_widget)
-        image_select_layout.setContentsMargins(0, 0, 0, 0)
+        # 圖片模式設定區塊
+        self.image_mode_container = QWidget()
+        image_mode_layout = QHBoxLayout(self.image_mode_container)
+        image_mode_layout.setContentsMargins(0, 0, 0, 0)
+        image_mode_layout.setSpacing(10)
+        
+        image_mode_layout.addWidget(QLabel("指針圖片:"))
+        
         self.image_path_label = QLabel("未選擇圖片")
+        image_mode_layout.addWidget(self.image_path_label)
+        
         self.image_select_btn = QPushButton("選擇圖片...")
         self.image_select_btn.clicked.connect(self.select_pointer_image)
+        image_mode_layout.addWidget(self.image_select_btn)
+        
         self.calibrate_btn = QPushButton("圖片修正")
         self.calibrate_btn.clicked.connect(self.open_calibration_dialog)
         self.calibrate_btn.setEnabled(False)
-        image_select_layout.addWidget(self.image_path_label)
-        image_select_layout.addWidget(self.image_select_btn)
-        image_select_layout.addWidget(self.calibrate_btn)
-        style_layout.addRow("指針圖片:", self.image_settings_widget)
-        self.image_settings_widget.setVisible(False)
+        image_mode_layout.addWidget(self.calibrate_btn)
+        image_mode_layout.addStretch()
         
-        # Line Settings (Border & Separator)
+        style_layout.addRow(self.image_mode_container)
+        self.image_mode_container.setVisible(False)
+
+        # 經典模式設定區塊
+        self.classic_mode_container = QWidget()
+        classic_mode_layout = QHBoxLayout(self.classic_mode_container)
+        classic_mode_layout.setContentsMargins(0, 0, 0, 0)
+        
+        classic_mode_layout.addWidget(QLabel("指針位置:"))
+        self.pointer_angle_combo = QComboBox()
+        # 0=右(E), 45=右下(SE), 90=下(S), 135=左下(SW), 180=左(W), 225=左上(NW), 270=上(N), 315=右上(NE)
+        self.pointer_angle_combo.addItems(["0° (右)", "45° (右下)", "90° (下)", "135° (左下)", "180° (左)", "225° (左上)", "270° (上)", "315° (右上)"])
+        self.pointer_angle_combo.currentIndexChanged.connect(self.on_classic_settings_changed)
+        classic_mode_layout.addWidget(self.pointer_angle_combo)
+        
+        classic_mode_layout.addSpacing(15)
+        
+        classic_mode_layout.addWidget(QLabel("中間文字:"))
+        self.center_text_input = QLineEdit("GO")
+        self.center_text_input.setFixedWidth(60)
+        self.center_text_input.textChanged.connect(self.on_classic_settings_changed)
+        classic_mode_layout.addWidget(self.center_text_input)
+        classic_mode_layout.addStretch()
+        
+        style_layout.addRow(self.classic_mode_container)
+        
+        # 線條設定 (邊框與分隔線)
         line_layout = QHBoxLayout()
-        # Border
+        # 邊框
         self.border_check = QCheckBox("啟用邊框")
         line_layout.addWidget(self.border_check)
         
         line_layout.addSpacing(15)
         
-        # Separator (Moved to left of Border Color)
+        # 分隔線 (移至邊框顏色左側)
         self.separator_check = QCheckBox("啟用分隔線 (同邊框色)")
         self.separator_check.setChecked(True)
         self.separator_check.stateChanged.connect(self.save_settings)
@@ -245,14 +323,20 @@ class ConfigWindow(QWidget):
         
         style_layout.addRow("線條設定:", line_layout)
         
-        # Result Settings (Color & Opacity)
+        # 結果設定 (顏色與透明度)
         result_layout = QHBoxLayout()
         
         self.result_color_btn = QPushButton("結果文字顏色")
-        self.result_color_btn.setFixedSize(100, 30)
         self.result_color_btn.clicked.connect(self.choose_result_color)
+        self.result_color_btn.setMinimumWidth(130)  # Ensure text fits
         self.update_result_color_btn()
         result_layout.addWidget(self.result_color_btn)
+        
+        self.result_bg_color_btn = QPushButton("結果背景顏色")
+        self.result_bg_color_btn.clicked.connect(self.choose_result_bg_color)
+        self.result_bg_color_btn.setMinimumWidth(130)  # Ensure text fits
+        self.update_result_bg_color_btn()
+        result_layout.addWidget(self.result_bg_color_btn)
         
         result_layout.addSpacing(15)
         result_layout.addWidget(QLabel("背景不透明度:"))
@@ -269,22 +353,11 @@ class ConfigWindow(QWidget):
         result_layout.addWidget(self.opacity_label)
         result_layout.addStretch()
         
-        style_layout.addRow("結果顯示:", result_layout)
+        style_layout.addRow(result_layout)
         
-        # Font Size
-        font_layout = QHBoxLayout()
-        self.font_size_spin = QSpinBox()
-        self.font_size_spin.setRange(8, 72)
-        try:
-             val = getattr(self, 'wheel_font_size', 16)
-             self.font_size_spin.setValue(val)
-        except:
-             self.font_size_spin.setValue(16)
-        self.font_size_spin.valueChanged.connect(self.on_font_size_changed)
-        font_layout.addWidget(self.font_size_spin)
-        style_layout.addRow("轉盤文字大小:", font_layout)
 
-        # Spin Speed
+
+        # 旋轉速度
         speed_layout = QHBoxLayout()
         self.speed_slider = QSlider(Qt.Horizontal)
         self.speed_slider.setRange(50, 200)
@@ -299,7 +372,7 @@ class ConfigWindow(QWidget):
         speed_layout.addStretch()
         style_layout.addRow("旋轉速度:", speed_layout)
         
-        # Sound Settings
+        # 音效設定
         sound_multi_layout = QHBoxLayout()
         
         self.sound_check = QCheckBox("啟用音效 (Tick)")
@@ -322,10 +395,10 @@ class ConfigWindow(QWidget):
         
         style_layout.addRow("音效:", sound_multi_layout)
 
-        style_group.setLayout(style_layout)
+        style_group.setContentLayout(style_layout)
         main_layout.addWidget(style_group)
         
-        # --- List Group ---
+        # --- 列表群組 ---
         list_group = QGroupBox("選項列表 (雙擊編輯)")
         list_layout = QVBoxLayout()
         
@@ -705,6 +778,7 @@ class ConfigWindow(QWidget):
         """從轉盤更新權重時的回調"""
         self.update_list()
         self.save_settings()
+        self.update_wheel()
 
     def update_list(self):
         """更新選項列表"""
@@ -749,6 +823,19 @@ class ConfigWindow(QWidget):
             self.update_list()
             self.update_wheel()
             self.save_settings()
+
+    def update_result_color_btn(self):
+        self.result_color_btn.setStyleSheet(f"background-color: {self.result_text_color.name()}")
+
+    def choose_result_bg_color(self):
+        color = QColorDialog.getColor(self.result_bg_color, self, "選擇結果背景顏色")
+        if color.isValid():
+            self.result_bg_color = color
+            self.update_result_bg_color_btn()
+            self.save_settings()
+
+    def update_result_bg_color_btn(self):
+        self.result_bg_color_btn.setStyleSheet(f"background-color: {self.result_bg_color.name()}; color: {self.result_text_color.name()}")
 
     def save_items(self):
         """儲存選項至檔案"""
@@ -812,6 +899,7 @@ class ConfigWindow(QWidget):
         """儲存設定"""
         settings = {
             "result_text_color": self.result_text_color.name(),
+            "result_bg_color": self.result_bg_color.name(),
             "border_enabled": self.border_check.isChecked(),
             "border_color": self.border_color.name(),
             "separator_enabled": self.separator_check.isChecked(),
@@ -822,7 +910,9 @@ class ConfigWindow(QWidget):
             "pointer_image_path": self.pointer_image_path,
             "pointer_angle_offset": self.pointer_angle_offset,
             "pointer_scale": self.pointer_scale,
-            "spin_speed_multiplier": self.spin_speed_multiplier
+            "spin_speed_multiplier": self.spin_speed_multiplier,
+            "classic_pointer_angle": self.classic_pointer_angle,
+            "center_text": self.center_text
         }
         if last_file:
             settings["last_file"] = last_file
@@ -851,6 +941,10 @@ class ConfigWindow(QWidget):
                 if "result_text_color" in settings:
                     self.result_text_color = QColor(settings["result_text_color"])
                     self.update_result_color_btn()
+
+                if "result_bg_color" in settings:
+                    self.result_bg_color = QColor(settings["result_bg_color"])
+                    self.update_result_bg_color_btn()
                 
                 if "border_color" in settings:
                     self.border_color = QColor(settings["border_color"])
@@ -874,23 +968,34 @@ class ConfigWindow(QWidget):
                     self.opacity_slider.setValue(slider_val)
                     self.opacity_label.setText(f"{slider_val}%")
                 
-                # Load New Settings
+                # 載入新設定
                 self.wheel_mode = settings.get('wheel_mode', 'classic')
                 self.pointer_image_path = settings.get('pointer_image_path', resource_path("ee.png"))
                 self.pointer_angle_offset = settings.get('pointer_angle_offset', 0)
                 self.pointer_scale = settings.get('pointer_scale', 1.0)
                 self.spin_speed_multiplier = settings.get('spin_speed_multiplier', 1.0)
                 
-                # Update speed slider
+                self.classic_pointer_angle = settings.get('classic_pointer_angle', 0)
+                self.center_text = settings.get('center_text', "GO")
+                
+                # 恢復 UI 狀態
+                angle_index = self.classic_pointer_angle // 45
+                if 0 <= angle_index < 8:
+                    self.pointer_angle_combo.setCurrentIndex(angle_index)
+                self.center_text_input.setText(self.center_text)
+                
+                # 更新速度滑桿
                 self.speed_slider.setValue(int(self.spin_speed_multiplier * 100))
                 self.speed_label.setText(f"{self.spin_speed_multiplier:.1f}x")
                 
                 if self.wheel_mode == 'image':
                     self.mode_image_radio.setChecked(True)
-                    self.image_settings_widget.setVisible(True)
+                    self.image_mode_container.setVisible(True)
+                    self.classic_mode_container.setVisible(False)
                 else:
                     self.mode_classic_radio.setChecked(True)
-                    self.image_settings_widget.setVisible(False)
+                    self.image_mode_container.setVisible(False)
+                    self.classic_mode_container.setVisible(True)
                     
                 self.image_path_label.setText(os.path.basename(self.pointer_image_path))
                 
@@ -946,9 +1051,16 @@ class ConfigWindow(QWidget):
 
     def on_mode_changed(self, button):
         self.wheel_mode = "image" if self.mode_image_radio.isChecked() else "classic"
-        self.image_settings_widget.setVisible(self.wheel_mode == "image")
+        self.image_mode_container.setVisible(self.wheel_mode == "image")
+        self.classic_mode_container.setVisible(self.wheel_mode == "classic")
         self.update_wheel_settings()
         self.save_settings()
+
+    def on_classic_settings_changed(self):
+        """經典模式設定變更"""
+        self.classic_pointer_angle = self.pointer_angle_combo.currentIndex() * 45
+        self.center_text = self.center_text_input.text()
+        self.update_wheel_settings()
 
     def select_pointer_image(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "選擇指針圖片", "", "Images (*.png *.jpg *.jpeg *.bmp)")
@@ -962,7 +1074,7 @@ class ConfigWindow(QWidget):
     def open_calibration_dialog(self):
         """開啟圖片修正視窗"""
         active_items = [i for i in self.items if i.get('enabled', True)]
-        # Default placeholder item if none active, to let user see something
+        # 如果沒有啟用的項目，則使用預設佔位符項目，讓使用者能看到東西
         if not active_items:
             active_items = [{'name': '測試', 'weight': 1, 'color': QColor('blue'), 'enabled': True}]
 
@@ -981,12 +1093,14 @@ class ConfigWindow(QWidget):
                 self.border_enabled_check(), 
                 self.border_color, 
                 self.result_text_color,
+                self.result_bg_color,
                 self.separator_check.isChecked(),
                 self.sound_check.isChecked(),
                 self.finish_sound_check.isChecked(),
                 int(self.opacity_slider.value() * 2.55)
             )
-            # Apply new mode settings
+            self.wheel_window.set_classic_settings(self.classic_pointer_angle, self.center_text)
+            # 應用新的模式設定
             self.wheel_window.set_mode(
                 self.wheel_mode,
                 self.pointer_image_path,

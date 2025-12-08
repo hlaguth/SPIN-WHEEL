@@ -12,5 +12,7 @@ dist/
 *.rar
 *.zip
 *.wav
+*.png
+
 # Logs
 *.log

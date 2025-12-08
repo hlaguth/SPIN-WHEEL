@@ -23,14 +23,14 @@ class ImageCalibrationDialog(QDialog):
     def init_ui(self):
         layout = QVBoxLayout()
         
-        # Preview Area
+        # 預覽區域
         self.preview_widget = CalibrationPreview(self)
         layout.addWidget(self.preview_widget)
         
-        # Controls
+        # 控制項
         controls_layout = QVBoxLayout()
         
-        # Angle Control
+        # 角度控制
         angle_layout = QHBoxLayout()
         angle_layout.addWidget(QLabel("角度:"))
         self.angle_slider = QSlider(Qt.Horizontal)
@@ -43,7 +43,7 @@ class ImageCalibrationDialog(QDialog):
         angle_layout.addWidget(self.angle_val_label)
         controls_layout.addLayout(angle_layout)
         
-        # Scale Control
+        # 大小控制
         scale_layout = QHBoxLayout()
         scale_layout.addWidget(QLabel("大小:"))
         self.scale_slider = QSlider(Qt.Horizontal)
@@ -58,7 +58,7 @@ class ImageCalibrationDialog(QDialog):
         
         layout.addLayout(controls_layout)
         
-        # Buttons
+        # 按鈕
         btn_layout = QHBoxLayout()
         ok_btn = QPushButton("確定")
         ok_btn.clicked.connect(self.accept)
@@ -98,10 +98,10 @@ class CalibrationPreview(QWidget):
         radius = w / 2
         center = rect.center()
         
-        # Draw Wheel Background (Static, simplified)
+        # 繪製轉盤背景（靜態，簡化版）
         total_weight = sum(item['weight'] for item in self.dialog.items)
         if total_weight > 0:
-            start_angle = 0 # Fixed at 0 for calibration
+            start_angle = 0 # 修正時固定為 0
             for item in self.dialog.items:
                 span_angle = (item['weight'] / total_weight) * 360
                 
@@ -110,7 +110,7 @@ class CalibrationPreview(QWidget):
                 painter.drawPie(QRectF(center.x() - radius, center.y() - radius, radius * 2, radius * 2),
                                 int(start_angle * 16), int(span_angle * 16))
                 
-                # Draw text (simplified)
+                # 繪製文字（簡化版）
                 mid_angle = start_angle + span_angle / 2
                 painter.save()
                 painter.translate(center)
@@ -125,13 +125,11 @@ class CalibrationPreview(QWidget):
                 
                 start_angle += span_angle
         
-        # Draw Reference Line (Red Line at 12 o'clock / 0 degrees)
-        # 0 degree in our logic is 3 o'clock in Qt?
-        # No, in our logic 0 degree usually points East (Qt default).
-        # We want "Top" to be the reference. Top is 90 degrees (CCW from East) or 270 degrees (CW)?
-        # Qt 0 is East. Top is 90 CCW.
-        # But wait, our wheel logic usually aligns 0 with... where?
-        # Let's draw a vertical line UP.
+        # 繪製基準線（12 點鐘方向 / 0 度紅線）
+        # 在我們的邏輯中，0 度通常指向東方（Qt 預設）。
+        # 我們希望以「上方」為基準。上方是逆時針 90 度或順時針 270 度。
+        # Qt 的 0 度是東方。上方是逆時針 90 度。
+        # 這裡我們直接向上畫一條垂直線。
         
         painter.setPen(QPen(Qt.red, 3, Qt.DashLine))
         painter.drawLine(center, QPointF(center.x(), center.y() - radius - 10))
@@ -139,50 +137,21 @@ class CalibrationPreview(QWidget):
         painter.setPen(QPen(Qt.red, 1))
         painter.drawText(QRectF(center.x() - 50, center.y() - radius - 30, 100, 20), Qt.AlignCenter, "基準線 (0°)")
 
-        # Draw Image Pointer
+        # 繪製圖片指針
         if self.dialog.pixmap:
             painter.save()
             painter.translate(center)
             
-            # Rotation:
-            # We want to show how the image looks when "wheel rotation" is 0.
-            # In `wheel_window.py`:
+            # 旋轉：
+            # 我們想顯示當「轉盤旋轉角度」為 0 時圖片的樣子。
+            # 在 `wheel_window.py` 中：
             # final_rotate = -self._rotation_angle - self.pointer_angle_offset
-            # faster mode: wheel rotates by -angle. 
-            # If self._rotation_angle is 0 (static wheel), rotation is -offset.
+            # 快速模式：轉盤旋轉 -angle。
+            # 如果 self._rotation_angle 為 0（靜態轉盤），旋轉即為 -offset。
             
-            # Wait, if I align image to Top, then offset should be what makes it point Top.
-            # If image points right (0 deg), and I want it to point Top (90 deg), I need rotation +90?
-            # Or -90?
-            # Let's just use the same logic as `wheel_window.py` but with rotation=0.
-            # Actually, `wheel_window` logic:
-            # `pointer_angle = (self._rotation_angle + self.pointer_angle_offset) % 360`
-            # `painter.rotate(-self._rotation_angle - self.pointer_angle_offset)`
-            
-            # If I want to align to "Reference Line" (which typically represents the winner selection point).
-            # Usually verification is: Does the pointer point to the winning sector?
-            # The winning sector detection uses `effective_angle = (angle + self.pointer_angle_offset) % 360`.
-            # So if angle=0 (wheel start), pointer points to `offset`.
-            # If I want pointer to point to Top (let's say Top is 90 deg in standard math), then `offset` should be 90.
-            
-            # Visual Feedback:
-            # Draw the image rotated by `offset`. 
-            # Whatever `offset` is set, we draw it.
-            # Users will rotate it until it physically aligns with the Red Line.
-            # So we just rotate by `-offset` (because Qt rotates Clockwise for positive? No, wait).
-            
-            # In `wheel_window`: `painter.rotate(-rotation_angle - offset)`.
-            # Here rotation_angle is 0. So `painter.rotate(-offset)`.
-            
-            # But wait, if `offset` increases (0 -> 90), `effective_angle` increases (CCW).
-            # `painter.rotate(-offset)` rotates CCW (if offset is positive).
-            # Wait, `painter.rotate(angle)`: "Rotates the coordinate system the given angle *clockwise*."
-            # So `painter.rotate(-offset)` rotates CCW.
-            # Correct.
-            
-            # Unified Visual Rotation matching WheelWindow
-            # WheelWindow uses: rotate(-effective) + rotate(90)
-            # effective = 90 + offset (at 0 angle)
+            # 統一的視覺旋轉邏輯，與 WheelWindow 匹配
+            # WheelWindow 使用：rotate(-effective) + rotate(90)
+            # effective = 90 + offset (當角度為 0 時)
             # rotate(-(90+offset)) + rotate(90) = rotate(-90 - offset + 90) = rotate(-offset)
             painter.rotate(-self.dialog.angle_offset)
             
