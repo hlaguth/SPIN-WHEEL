@@ -71,6 +71,12 @@ class ItemWidget(QWidget):
         layout = QHBoxLayout()
         layout.setContentsMargins(10, 8, 10, 8)
         
+        self.checkbox = QCheckBox()
+        self.checkbox.setChecked(enabled)
+        self.checkbox.toggled.connect(self.on_toggled)
+        self.checkbox.setStyleSheet("QCheckBox::indicator { width: 20px; height: 20px; }")
+        layout.addWidget(self.checkbox)
+        
         self.color_lbl = QLabel()
         self.color_lbl.setFixedSize(20, 20)
         self.color_lbl.setStyleSheet(f"background-color: {color.name()}; border: 1px solid #555;")
@@ -82,12 +88,6 @@ class ItemWidget(QWidget):
         layout.addWidget(self.info_lbl)
         
         layout.addStretch()
-        
-        self.checkbox = QCheckBox()
-        self.checkbox.setChecked(enabled)
-        self.checkbox.toggled.connect(self.on_toggled)
-        self.checkbox.setStyleSheet("QCheckBox::indicator { width: 20px; height: 20px; }")
-        layout.addWidget(self.checkbox)
         
         self.setLayout(layout)
         
@@ -177,14 +177,17 @@ class ConfigWindow(QWidget):
         self.sound_enabled = False
         self.finish_sound_enabled = False
         self.result_opacity = 150
-        self.result_opacity = 150
+        self.always_on_top = True
         self.pre_expand_width = 600
         
         self.wheel_mode = "classic" # "classic" 或 "image"
-        self.pointer_image_path = resource_path("ee.png")
+        self.wheel_mode = "classic" # "classic" 或 "image"
+        self.pointer_image_path = resource_path("PIC/ee.png")
+        self.pointer_angle_offset = 0
         self.pointer_angle_offset = 0
         self.pointer_scale = 1.0
         self.spin_speed_multiplier = 1.0 # 速度倍率 (1.0 = 正常)
+        self.allowed_speeds = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 7.5, 10.0]
         self.classic_pointer_angle = 0
         self.center_text = "GO"
         self.show_pointer_line = True
@@ -198,7 +201,7 @@ class ConfigWindow(QWidget):
         main_layout.setSpacing(15)
         main_layout.setContentsMargins(20, 20, 20, 20)
         
-        input_group = CollapsibleBox("新增/編輯選項")
+        self.input_group = CollapsibleBox("新增/編輯選項")
         input_layout = QFormLayout()
         
         self.name_input = QLineEdit()
@@ -231,11 +234,11 @@ class ConfigWindow(QWidget):
         self.cancel_edit_btn.setStyleSheet("background-color: #9E9E9E;")
         input_layout.addRow(self.cancel_edit_btn)
         
-        input_group.setContentLayout(input_layout)
-        main_layout.addWidget(input_group)
+        self.input_group.setContentLayout(input_layout)
+        main_layout.addWidget(self.input_group)
 
         # 樣式設定群組 (使用自訂 CollapsibleBox)
-        style_group = CollapsibleBox("轉盤樣式設定")
+        self.style_group = CollapsibleBox("轉盤樣式設定")
         style_layout = QFormLayout()
         
         # 轉盤模式
@@ -282,6 +285,9 @@ class ConfigWindow(QWidget):
         
         style_layout.addRow(self.image_mode_container)
         self.image_mode_container.setVisible(False)
+        
+        # 經典模式設定區塊
+        self.image_mode_container.setVisible(False)
 
         # 經典模式設定區塊
         self.classic_mode_container = QWidget()
@@ -310,6 +316,7 @@ class ConfigWindow(QWidget):
         line_layout = QHBoxLayout()
         # 邊框
         self.border_check = QCheckBox("啟用邊框")
+        self.border_check.stateChanged.connect(self.update_wheel_settings)
         line_layout.addWidget(self.border_check)
         
         line_layout.addSpacing(15)
@@ -317,7 +324,7 @@ class ConfigWindow(QWidget):
         # 分隔線 (移至邊框顏色左側)
         self.separator_check = QCheckBox("啟用分隔線 (同邊框色)")
         self.separator_check.setChecked(True)
-        self.separator_check.stateChanged.connect(self.save_settings)
+        self.separator_check.stateChanged.connect(self.update_wheel_settings)
         line_layout.addWidget(self.separator_check)
 
         line_layout.addSpacing(15)
@@ -337,48 +344,65 @@ class ConfigWindow(QWidget):
         
         self.result_color_btn = QPushButton("結果文字顏色")
         self.result_color_btn.clicked.connect(self.choose_result_color)
-        self.result_color_btn.setMinimumWidth(115)  # Ensure text fits
+        self.result_color_btn.setMinimumWidth(140)  # Ensure text fits
         self.update_result_color_btn()
         result_layout.addWidget(self.result_color_btn)
         
         self.result_bg_color_btn = QPushButton("結果背景顏色")
         self.result_bg_color_btn.clicked.connect(self.choose_result_bg_color)
-        self.result_bg_color_btn.setMinimumWidth(115)  # Ensure text fits
+        self.result_bg_color_btn.setMinimumWidth(140)  # Ensure text fits
         self.update_result_bg_color_btn()
         result_layout.addWidget(self.result_bg_color_btn)
         
-        result_layout.addSpacing(15)
-        result_layout.addWidget(QLabel("背景不透明度:"))
+        style_layout.addRow(result_layout)
+        
+        # 透明度設定
+        opacity_layout = QHBoxLayout()
+        opacity_layout.addWidget(QLabel("背景不透明度:"))
         
         self.opacity_slider = QSlider(Qt.Horizontal)
         self.opacity_slider.setRange(0, 100)
         self.opacity_slider.setValue(60)
-        self.opacity_slider.setFixedWidth(100)
+        self.opacity_slider.setFixedWidth(200)
         self.opacity_slider.valueChanged.connect(self.on_opacity_changed)
         self.opacity_slider.sliderReleased.connect(self.save_settings)
-        result_layout.addWidget(self.opacity_slider)
+        opacity_layout.addWidget(self.opacity_slider)
         
         self.opacity_label = QLabel("60%")
-        result_layout.addWidget(self.opacity_label)
-        result_layout.addStretch()
+        opacity_layout.addWidget(self.opacity_label)
+        opacity_layout.addStretch()
         
-        style_layout.addRow(result_layout)
-        
-
+        style_layout.addRow(opacity_layout)
 
         # 旋轉速度
         speed_layout = QHBoxLayout()
         self.speed_slider = QSlider(Qt.Horizontal)
-        self.speed_slider.setRange(50, 200)
-        self.speed_slider.setValue(100)
-        self.speed_slider.setFixedWidth(100)
+        self.speed_slider.setRange(0, len(self.allowed_speeds) - 1)
+        # Find closest index for current speed
+        current_idx = 2 # Default to 1.0 (index 2)
+        try:
+             current_idx = self.allowed_speeds.index(self.spin_speed_multiplier)
+        except ValueError:
+             # If not exact match, find closest
+             current_idx = min(range(len(self.allowed_speeds)), key=lambda i: abs(self.allowed_speeds[i]-self.spin_speed_multiplier))
+        self.speed_slider.setValue(current_idx)
+        self.speed_slider.setFixedWidth(150)
         self.speed_slider.valueChanged.connect(self.on_speed_changed)
         self.speed_slider.sliderReleased.connect(self.save_settings)
         speed_layout.addWidget(self.speed_slider)
         self.speed_label = QLabel("1.0x")
         self.speed_label.setFixedWidth(40)
         speed_layout.addWidget(self.speed_label)
+        
+        speed_layout.addSpacing(15)
+        
         speed_layout.addStretch()
+        
+        self.multi_spin_setup_btn = QPushButton("設定連抽")
+        self.multi_spin_setup_btn.clicked.connect(self.show_multi_spin_dialog)
+        self.multi_spin_setup_btn.setEnabled(False)
+        self.multi_spin_setup_btn.setStyleSheet("background-color: #9E9E9E;")
+        speed_layout.addWidget(self.multi_spin_setup_btn)
         style_layout.addRow("旋轉速度:", speed_layout)
         
         # 音效設定
@@ -389,6 +413,11 @@ class ConfigWindow(QWidget):
         self.sound_check.stateChanged.connect(self.update_wheel_settings)
         sound_multi_layout.addWidget(self.sound_check)
 
+        self.continuous_sound_check = QCheckBox("持續音效 (Loop)")
+        self.continuous_sound_check.setChecked(False)
+        self.continuous_sound_check.stateChanged.connect(self.update_wheel_settings)
+        sound_multi_layout.addWidget(self.continuous_sound_check)
+
         self.finish_sound_check = QCheckBox("啟用結束音效 (Finish)")
         self.finish_sound_check.setChecked(False)
         self.finish_sound_check.stateChanged.connect(self.update_wheel_settings)
@@ -396,16 +425,10 @@ class ConfigWindow(QWidget):
         
         sound_multi_layout.addStretch()
         
-        self.multi_spin_setup_btn = QPushButton("設定連抽")
-        self.multi_spin_setup_btn.clicked.connect(self.show_multi_spin_dialog)
-        self.multi_spin_setup_btn.setEnabled(False)
-        self.multi_spin_setup_btn.setStyleSheet("background-color: #9E9E9E;")
-        sound_multi_layout.addWidget(self.multi_spin_setup_btn)
-        
         style_layout.addRow("音效:", sound_multi_layout)
 
-        style_group.setContentLayout(style_layout)
-        main_layout.addWidget(style_group)
+        self.style_group.setContentLayout(style_layout)
+        main_layout.addWidget(self.style_group)
         
         # --- 列表群組 ---
         list_group = QGroupBox("選項列表 (雙擊編輯)")
@@ -551,6 +574,8 @@ class ConfigWindow(QWidget):
             self.expand_btn.setText("◀")
             self.resize(self.width() + self.history_panel_width, self.height())
             self.update_history_list()
+        
+        self.save_settings()
             
     def add_history_record(self, winner_name):
         """新增歷史紀錄"""
@@ -576,22 +601,45 @@ class ConfigWindow(QWidget):
             self.multi_spin_setup_btn.setStyleSheet("background-color: #673AB7;")
             return
             
-        reply = QMessageBox.question(self, "準備連抽", "開始連抽前，是否清空目前的歷史紀錄？",
-                                   QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel, QMessageBox.No)
+        # 確保對話框在最上層
+        msg = QMessageBox(self)
+        msg.setWindowTitle("準備連抽")
+        msg.setText("開始連抽前，是否清空目前的歷史紀錄？")
+        msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel)
+        msg.setDefaultButton(QMessageBox.No)
+        msg.setWindowFlags(msg.windowFlags() | Qt.WindowStaysOnTopHint)
+        reply = msg.exec()
                                    
         if reply == QMessageBox.Cancel:
             return
         if reply == QMessageBox.Yes:
             self.clear_history()
 
-        from PySide6.QtWidgets import QInputDialog
+        # 速度輸入
+        input_dialog_speed = QInputDialog(self)
+        input_dialog_speed.setWindowTitle("多連抽設定")
+        input_dialog_speed.setLabelText("速度倍率 (原本的幾倍?):")
+        input_dialog_speed.setDoubleDecimals(1)
+        input_dialog_speed.setDoubleRange(1.0, 10.0)
+        input_dialog_speed.setDoubleValue(3.0)
+        input_dialog_speed.setWindowFlags(input_dialog_speed.windowFlags() | Qt.WindowStaysOnTopHint)
         
-        speed, ok = QInputDialog.getDouble(self, "多連抽設定", "速度倍率 (原本的幾倍?):", 3.0, 1.0, 10.0, 1)
-        if not ok:
+        if input_dialog_speed.exec() == QInputDialog.Accepted:
+            speed = input_dialog_speed.doubleValue()
+        else:
             return
-        
-        count, ok = QInputDialog.getInt(self, "多連抽設定", "連抽次數:", 10, 1, 1000)
-        if not ok:
+
+        # 次數輸入
+        input_dialog_count = QInputDialog(self)
+        input_dialog_count.setWindowTitle("多連抽設定")
+        input_dialog_count.setLabelText("連抽次數:")
+        input_dialog_count.setIntRange(1, 1000)
+        input_dialog_count.setIntValue(10)
+        input_dialog_count.setWindowFlags(input_dialog_count.windowFlags() | Qt.WindowStaysOnTopHint)
+
+        if input_dialog_count.exec() == QInputDialog.Accepted:
+            count = input_dialog_count.intValue()
+        else:
             return
         
         if self.wheel_window is None:
@@ -724,6 +772,10 @@ class ConfigWindow(QWidget):
         self.add_btn.setText("更新選項")
         self.cancel_edit_btn.setVisible(True)
         
+        # Auto expand input group
+        if hasattr(self, 'input_group'):
+            self.input_group.toggle_btn.setChecked(True)
+
     def cancel_edit(self):
         """取消編輯"""
         self.editing_index = -1
@@ -913,8 +965,11 @@ class ConfigWindow(QWidget):
             "border_color": self.border_color.name(),
             "separator_enabled": self.separator_check.isChecked(),
             "sound_enabled": self.sound_check.isChecked(),
+            "continuous_sound_enabled": self.continuous_sound_check.isChecked(),
             "finish_sound_enabled": self.finish_sound_check.isChecked(),
             "result_opacity": int(self.opacity_slider.value() * 2.55),
+            "always_on_top": self.always_on_top,
+            
             "wheel_mode": self.wheel_mode,
             "pointer_image_path": self.pointer_image_path,
             "pointer_angle_offset": self.pointer_angle_offset,
@@ -923,7 +978,12 @@ class ConfigWindow(QWidget):
             "classic_pointer_angle": self.classic_pointer_angle,
             "classic_pointer_angle": self.classic_pointer_angle,
             "center_text": self.center_text,
-            "show_pointer_line": self.show_pointer_line
+            "show_pointer_line": self.show_pointer_line,
+            "panel_expanded": self.panel_expanded,
+            "show_pointer_line": self.show_pointer_line,
+            "panel_expanded": self.panel_expanded,
+            "input_panel_expanded": self.input_group.toggle_btn.isChecked() if hasattr(self, 'input_group') else True,
+            "style_panel_expanded": self.style_group.toggle_btn.isChecked() if hasattr(self, 'style_group') else True
         }
         if last_file:
             settings["last_file"] = last_file
@@ -944,6 +1004,7 @@ class ConfigWindow(QWidget):
 
     def load_last_settings(self):
         """載入上次的設定"""
+        print(f"DEBUG: Loading settings... File: {__file__}")
         if os.path.exists(SETTINGS_FILE):
             try:
                 with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
@@ -970,6 +1031,9 @@ class ConfigWindow(QWidget):
                 if "sound_enabled" in settings:
                     self.sound_check.setChecked(settings["sound_enabled"])
 
+                if "continuous_sound_enabled" in settings:
+                    self.continuous_sound_check.setChecked(settings["continuous_sound_enabled"])
+
                 if "finish_sound_enabled" in settings:
                     self.finish_sound_check.setChecked(settings["finish_sound_enabled"])
 
@@ -978,15 +1042,31 @@ class ConfigWindow(QWidget):
                     slider_val = int(self.result_opacity / 2.55)
                     self.opacity_slider.setValue(slider_val)
                     self.opacity_label.setText(f"{slider_val}%")
+
+                if "always_on_top" in settings:
+                    self.always_on_top = settings["always_on_top"]
+                    # NO CHECKBOX UPDATE HERE
                 
+                # Restore panel expansion state
+                if "panel_expanded" in settings:
+                    should_expand = settings["panel_expanded"]
+                    if should_expand != self.panel_expanded:
+                        self.toggle_history_panel()
+
+                if "input_panel_expanded" in settings and hasattr(self, 'input_group'):
+                    self.input_group.toggle_btn.setChecked(settings["input_panel_expanded"])
+
+                if "style_panel_expanded" in settings and hasattr(self, 'style_group'):
+                    self.style_group.toggle_btn.setChecked(settings["style_panel_expanded"])
+
+                # 載入新設定
                 # 載入新設定
                 self.wheel_mode = settings.get('wheel_mode', 'classic')
-                self.pointer_image_path = settings.get('pointer_image_path', resource_path("ee.png"))
+                self.pointer_image_path = settings.get('pointer_image_path', resource_path("PIC/ee.png"))
                 self.pointer_angle_offset = settings.get('pointer_angle_offset', 0)
                 self.pointer_scale = settings.get('pointer_scale', 1.0)
                 self.spin_speed_multiplier = settings.get('spin_speed_multiplier', 1.0)
                 
-                self.classic_pointer_angle = settings.get('classic_pointer_angle', 0)
                 self.classic_pointer_angle = settings.get('classic_pointer_angle', 0)
                 self.center_text = settings.get('center_text', "GO")
                 self.show_pointer_line = settings.get('show_pointer_line', True)
@@ -1000,8 +1080,16 @@ class ConfigWindow(QWidget):
                 self.center_text_input.setText(self.center_text)
                 
                 # 更新速度滑桿
-                self.speed_slider.setValue(int(self.spin_speed_multiplier * 100))
-                self.speed_label.setText(f"{self.spin_speed_multiplier:.1f}x")
+                try:
+                    # Find closest index
+                    current_idx = min(range(len(self.allowed_speeds)), key=lambda i: abs(self.allowed_speeds[i]-self.spin_speed_multiplier))
+                    self.speed_slider.setValue(current_idx)
+                    self.spin_speed_multiplier = self.allowed_speeds[current_idx] # Snap to allowed value
+                except:
+                    self.speed_slider.setValue(2) # Default to 1.0
+                    self.spin_speed_multiplier = 1.0
+                
+                self.speed_label.setText(f"{self.spin_speed_multiplier}x")
                 
                 if self.wheel_mode == 'image':
                     self.mode_image_radio.setChecked(True)
@@ -1012,12 +1100,14 @@ class ConfigWindow(QWidget):
                     self.image_mode_container.setVisible(False)
                     self.classic_mode_container.setVisible(True)
                     
-                self.image_path_label.setText(os.path.basename(self.pointer_image_path))
+                if hasattr(self, 'image_path_label'):
+                    self.image_path_label.setText(os.path.basename(self.pointer_image_path))
                 
                 if self.pointer_image_path and os.path.exists(self.pointer_image_path):
-                     self.calibrate_btn.setEnabled(True)
+                     if hasattr(self, 'calibrate_btn'):
+                        self.calibrate_btn.setEnabled(True)
                     
-                if "last_file" in settings and os.path.exists(settings["last_file"]):
+                if "last_file" in settings and isinstance(settings["last_file"], str) and os.path.exists(settings["last_file"]):
                     with open(settings["last_file"], 'r', encoding='utf-8') as f:
                         data = json.load(f)
                     self.items = []
@@ -1030,7 +1120,9 @@ class ConfigWindow(QWidget):
                         })
                     self.update_list()
             except Exception as e:
-                print(f"Error loading settings: {e}")
+                import traceback
+                traceback.print_exc()
+                QMessageBox.critical(self, "錯誤", f"載入失敗: {str(e)}")
 
     def toggle_wheel(self):
         """切換轉盤視窗"""
@@ -1044,6 +1136,10 @@ class ConfigWindow(QWidget):
             self.wheel_window.show()
             self.wheel_window.spin_finished.connect(self.add_history_record)
             self.wheel_window.window_closed.connect(self.on_wheel_closed)
+            
+            # 立即應用所有設定 (包含速度)
+            self.update_wheel_settings()
+            
             self.open_wheel_btn.setText("關閉轉盤")
             
             self.multi_spin_setup_btn.setEnabled(True)
@@ -1131,9 +1227,9 @@ class ConfigWindow(QWidget):
                 self.separator_check.isChecked(),
                 self.sound_check.isChecked(),
                 self.finish_sound_check.isChecked(),
-
                 int(self.opacity_slider.value() * 2.55),
-                self.show_pointer_line
+                self.show_pointer_line,
+                self.continuous_sound_check.isChecked()
             )
             self.wheel_window.set_classic_settings(self.classic_pointer_angle, self.center_text)
             # 應用新的模式設定
@@ -1144,8 +1240,11 @@ class ConfigWindow(QWidget):
                 self.pointer_scale
             )
             
+            # 設定置頂
+            self.wheel_window.set_always_on_top(True)
+
+
     def on_opacity_changed(self):
-        """透明度滑桿改變時的回調"""
         val = self.opacity_slider.value()
         self.result_opacity = int(val * 2.55)
         self.opacity_label.setText(f"{val}%")
@@ -1156,9 +1255,10 @@ class ConfigWindow(QWidget):
 
     def on_speed_changed(self):
         """旋轉速度滑桿改變時的回調"""
-        val = self.speed_slider.value()
-        self.spin_speed_multiplier = val / 100.0
-        self.speed_label.setText(f"{self.spin_speed_multiplier:.1f}x")
+        idx = self.speed_slider.value()
+        if 0 <= idx < len(self.allowed_speeds):
+            self.spin_speed_multiplier = self.allowed_speeds[idx]
+            self.speed_label.setText(f"{self.spin_speed_multiplier}x")
         
         if self.wheel_window:
             self.wheel_window.spin_speed_multiplier = self.spin_speed_multiplier
@@ -1184,3 +1284,10 @@ class ConfigWindow(QWidget):
     def border_enabled_check(self):
         """檢查邊框是否啟用"""
         return self.border_check.isChecked()
+
+    def closeEvent(self, event):
+        """視窗關閉事件"""
+        self.save_settings()
+        if self.wheel_window:
+            self.wheel_window.close()
+        super().closeEvent(event)

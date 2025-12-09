@@ -78,6 +78,7 @@ class WheelWindow(QWidget):
         self.border_color = QColor(Qt.white)
         self.separator_enabled = True
         self.sound_enabled = False
+        self.continuous_sound_enabled = False
         self.finish_sound_enabled = False
         self.result_opacity = 150
         
@@ -138,6 +139,19 @@ class WheelWindow(QWidget):
         else:
             self.pointer_pixmap = None
 
+    def set_always_on_top(self, enabled):
+        """設定視窗是否置頂"""
+        if self.edit_mode:
+            return 
+
+        # 保留原有的 FramelessWindowHint 和 Tool 屬性
+        flags = Qt.FramelessWindowHint | Qt.Tool
+        if enabled:
+            flags |= Qt.WindowStaysOnTopHint
+        
+        self.setWindowFlags(flags)
+        self.show() # 重設 flags 後需要呼叫 show() 才會生效
+
     def load_tick_sound(self):
         """載入滴答音效"""
         wav_path = resource_path("tick.wav")
@@ -181,7 +195,7 @@ class WheelWindow(QWidget):
         """重置控制點計時器"""
         self.grip_timer.start()
 
-    def update_settings(self, items, border_enabled, border_color, result_color, result_bg_color, separator_enabled=True, sound_enabled=False, finish_sound_enabled=False, result_opacity=150, show_pointer_line=True):
+    def update_settings(self, items, border_enabled, border_color, result_color, result_bg_color, separator_enabled=True, sound_enabled=False, finish_sound_enabled=False, result_opacity=150, show_pointer_line=True, continuous_sound_enabled=False):
         """更新轉盤設定"""
         self.items = items
         self.border_enabled = border_enabled
@@ -190,6 +204,7 @@ class WheelWindow(QWidget):
         self.result_bg_color = result_bg_color
         self.separator_enabled = separator_enabled
         self.sound_enabled = sound_enabled
+        self.continuous_sound_enabled = continuous_sound_enabled
         self.finish_sound_enabled = finish_sound_enabled
         self.result_opacity = result_opacity
         self.show_pointer_line = show_pointer_line
@@ -199,7 +214,7 @@ class WheelWindow(QWidget):
         """設定旋轉角度並處理音效"""
         self._rotation_angle = angle
         
-        if self.sound_enabled:
+        if self.sound_enabled and not self.continuous_sound_enabled:
             # 計算相對於轉盤的有效指針角度
             if self.wheel_mode == "image":
                 # 圖片模式：統一邏輯：指針角度 = (90 + 旋轉角度 + 偏移量) % 360
@@ -294,6 +309,15 @@ class WheelWindow(QWidget):
         self.deceleration = base_decel * (total_multiplier ** 2.0)
         
         self.is_spinning = True
+        
+        if self.continuous_sound_enabled:
+            try:
+                wav_path = resource_path("tick.wav")
+                if os.path.exists(wav_path):
+                    winsound.PlaySound(wav_path, winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_LOOP)
+            except:
+                pass
+                
         self.timer.start(25)
 
     def physics_update(self):
@@ -311,6 +335,13 @@ class WheelWindow(QWidget):
             self.rotation_speed = 0
             self.is_spinning = False
             self.timer.stop()
+            
+            if self.continuous_sound_enabled:
+                try:
+                    winsound.PlaySound(None, winsound.SND_PURGE)
+                except:
+                    pass
+                    
             self.on_spin_finished()
 
     def on_spin_finished(self):
