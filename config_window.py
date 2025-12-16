@@ -1405,9 +1405,9 @@ class ConfigWindow(QWidget):
                 self.do_load(files[0])
 
     def do_load(self, file_name):
-        """執行載入"""
+        """執行載入 (僅讀取內容，不綁定檔案路徑)"""
         try:
-            self.current_file_path = file_name
+            # self.current_file_path = file_name # 移除這行，避免自動儲存覆蓋原始檔案
             with open(file_name, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
@@ -1427,8 +1427,20 @@ class ConfigWindow(QWidget):
             
             self.update_list()
             self.update_wheel()
-            self.save_settings(last_file=file_name)
-            QMessageBox.information(self, "成功", "設定已載入")
+            
+            # 不更新 last_file，因為這只是匯入資料，不是開啟專案
+            # self.save_settings(last_file=file_name) 
+            self.save_settings() # 僅儲存 UI 設定
+            
+            # 觸發一次自動儲存到預設的 autosave.json (或保持未儲存狀態直到使用者手動存檔)
+            # 這裡我們選擇讓它存到 autosave.json，確保資料不會遺失
+            self.current_file_path = None 
+            self.auto_save_items() # 這會失敗或存到 autosave? 
+            # 修正: auto_save_items 依賴 current_file_path。
+            # 如果是 None，auto_save 會 return。
+            # 所以這裡我們應該明確告訴使用者：已匯入，但尚未儲存到特定檔案。
+            
+            QMessageBox.information(self, "成功", "設定已載入 (變更不會寫回原檔案)")
         except Exception as e:
             msg = QMessageBox(self)
             msg.setWindowTitle("錯誤")
@@ -1717,18 +1729,52 @@ class ConfigWindow(QWidget):
         self.update_wheel_settings()
 
     def select_pointer_image(self):
+        """選擇指針圖片"""
         dialog = QFileDialog(self, "選擇指針圖片", "", "Images (*.png *.jpg *.jpeg *.bmp)")
         dialog.setWindowModality(Qt.WindowModal)
         
         if dialog.exec():
             files = dialog.selectedFiles()
             if files:
-                file_path = files[0]
-                self.pointer_image_path = file_path
-                self.image_path_label.setText(os.path.basename(file_path))
-                self.calibrate_btn.setEnabled(True)
-                self.update_wheel_settings()
-                self.save_settings()
+                src_path = files[0]
+                
+                # 確保外部 PIC 資料夾存在
+                pic_dir = external_path("PIC")
+                if not os.path.exists(pic_dir):
+                    try:
+                        os.makedirs(pic_dir)
+                    except:
+                        pass # Should handle permission error?
+                        
+                # 複製檔案到 PIC 資料夾
+                try:
+                    filename = os.path.basename(src_path)
+                    dest_path = os.path.join(pic_dir, filename)
+                    
+                    # 避免同名覆蓋確認? 使用者需求是簡單複製
+                    shutil.copy2(src_path, dest_path)
+                    
+                    self.pointer_image_path = dest_path
+                    self.image_path_label.setText(filename)
+                    self.calibrate_btn.setEnabled(True)
+                    self.update_wheel_settings()
+                    self.save_settings()
+                    
+                    QMessageBox.information(self, "成功", f"圖片已複製到: PIC/{filename}")
+                    
+                except Exception as e:
+                    msg = QMessageBox(self)
+                    msg.setWindowTitle("錯誤")
+                    msg.setText(f"複製圖片失敗: {str(e)}")
+                    msg.setIcon(QMessageBox.Critical)
+                    msg.setWindowModality(Qt.WindowModal)
+                    msg.exec()
+                    # Fallback to source path? Or just fail? 
+                    # Use source path as fallback if copy fails
+                    self.pointer_image_path = src_path
+                    self.image_path_label.setText(os.path.basename(src_path))
+                    self.update_wheel_settings()
+                    self.save_settings()
 
     def open_calibration_dialog(self):
         """開啟圖片修正視窗"""

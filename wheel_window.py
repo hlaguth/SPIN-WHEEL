@@ -375,7 +375,7 @@ class WheelWindow(QWidget):
 
     def play_finish_sound(self, custom_path=None):
         """播放結束音效 (支援自訂路徑)"""
-        # 如果全域結束音效未啟用，則完全不播放 (包含自訂音效)
+    
         if not self.finish_sound_enabled:
             return
 
