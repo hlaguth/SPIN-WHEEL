@@ -365,16 +365,6 @@ class WheelWindow(QWidget):
                  if self.tick_player.source().isValid():
                      if self.tick_player.playbackState() == QMediaPlayer.PlayingState:
                          self.tick_player.stop()
-                     
-                     # 根據頻率調整播放速率 (0.8x ~ 2.0x)
-                     # freq range: ~200 (慢) to ~1500 (快)
-                     # Base: 400->1.0
-                     rate = 1.0 + (freq - 400) / 1000.0
-                     # Clamp rate
-                     if rate < 0.8: rate = 0.8
-                     if rate > 2.0: rate = 2.0
-                     
-                     self.tick_player.setPlaybackRate(rate)
                      self.tick_player.play()
              else:
                  if self.tick_effect.source().isValid():
