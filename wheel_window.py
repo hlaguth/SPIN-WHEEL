@@ -1,35 +1,13 @@
-import math
-import random
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QApplication, QMessageBox, QLabel, QListWidget, QListWidgetItem, QHBoxLayout, QFrame
 from PySide6.QtGui import QPainter, QBrush, QPen, QColor, QPainterPath, QFont, QPolygonF, QCursor, QTextOption, QMouseEvent, QPixmap, QTransform
-from PySide6.QtCore import Qt, QPointF, QRectF, QPropertyAnimation, QEasingCurve, Property, Signal, QRect, QTimer, QSize, QTime
-import winsound
+from PySide6.QtCore import Qt, QPointF, QRectF, QPropertyAnimation, QEasingCurve, Property, Signal, QRect, QTimer, QSize, QTime, QUrl
+from PySide6.QtMultimedia import QSoundEffect, QMediaPlayer, QAudioOutput, QAudioDevice
 import os
-import struct
-import io
-from utils import resource_path
+import random
+import math
+from utils import resource_path, external_path
 
-class WavPitchShifter:
-    """WAV 音高調整工具"""
-    @staticmethod
-    def shift_pitch(wav_data, target_freq_offset=0):
-        try:
-            data = bytearray(wav_data)
-            if len(data) < 44:
-                return None
-            
-            original_rate = struct.unpack('<I', data[24:28])[0]
-            multiplier = target_freq_offset / 600.0
-            if multiplier < 0.5:
-                multiplier = 0.5
-            if multiplier > 2.0:
-                multiplier = 2.0
-            
-            new_rate = int(original_rate * multiplier)
-            struct.pack_into('<I', data, 24, new_rate)
-            return bytes(data)
-        except:
-            return None
+
 
 class WheelWindow(QWidget):
     """轉盤視窗Class"""
@@ -98,8 +76,22 @@ class WheelWindow(QWidget):
         self.last_pointer_index = -1
         self.last_sound_time = QTime.currentTime()
         
-        self.tick_sound_data = None
-        self.load_tick_sound()
+        # Audio Initialization
+        self.tick_effect = QSoundEffect()
+        self.tick_player = QMediaPlayer()
+        self.tick_audio = QAudioOutput()
+        self.tick_player.setAudioOutput(self.tick_audio)
+        self.using_mp3_tick = False # Flag for MP3 mode
+        
+        self.finish_player = QMediaPlayer()
+        self.finish_audio = QAudioOutput()
+        self.finish_player.setAudioOutput(self.finish_audio)
+        
+        self.loop_player = QMediaPlayer()
+        self.loop_audio = QAudioOutput()
+        self.loop_player.setAudioOutput(self.loop_audio)
+        
+        self.load_sounds()
 
         self.wheel_font = QFont("Microsoft JhengHei")
         self.wheel_font.setBold(True)
@@ -109,6 +101,11 @@ class WheelWindow(QWidget):
         
         # 新功能：圖片指針模式
         self.wheel_mode = "classic"
+        
+        self.has_shown_error = False # Flag for error dialog
+        
+        # UI Setup
+        # self.setup_ui() # This line was part of the user's snippet but seems to be a typo/incomplete. Assuming it's not intended to be called here.
         self.pointer_image_path = ""
         self.pointer_pixmap = None
         self.pointer_angle_offset = 0
@@ -132,37 +129,138 @@ class WheelWindow(QWidget):
         self.load_pointer_image()
         self.update()
 
+    def on_position_changed(self):
+        """當視窗位置改變時觸發"""
+        pass
+        
+    def on_audio_error(self, source_name, error, error_string):
+        """音效錯誤處理"""
+        # Log error
+        try:
+            log_path = external_path("audio_debug.log")
+            timestamp = QTime.currentTime().toString("HH:mm:ss")
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"[{timestamp}] Error in {source_name}: {error} - {error_string}\n")
+        except:
+            pass
+
+        # Show alert (only once)
+        if not self.has_shown_error:
+            self.has_shown_error = True
+            try: 
+                msg = QMessageBox(self)
+                msg.setWindowTitle("音效播放錯誤")
+                msg.setText(f"無法播放音效 ({source_name})。\n\n錯誤詳情: {error_string}\n\n這可能是因為缺少解碼器或檔案路徑問題。")
+                msg.setIcon(QMessageBox.Warning)
+                msg.setWindowModality(Qt.WindowModal)
+                msg.exec()
+            except:
+                pass
+
     def load_pointer_image(self):
         """載入指針圖片"""
+        loaded = False
         if self.pointer_image_path and os.path.exists(self.pointer_image_path):
             self.pointer_pixmap = QPixmap(self.pointer_image_path)
-        else:
-            self.pointer_pixmap = None
-
-    def set_always_on_top(self, enabled):
-        """設定視窗是否置頂"""
-        if self.edit_mode:
-            return 
-
-        # 保留原有的 FramelessWindowHint 和 Tool 屬性
-        flags = Qt.FramelessWindowHint | Qt.Tool
-        if enabled:
-            flags |= Qt.WindowStaysOnTopHint
+            if not self.pointer_pixmap.isNull():
+                loaded = True
         
-        self.setWindowFlags(flags)
-        self.show() # 重設 flags 後需要呼叫 show() 才會生效
+        if not loaded:
+            # Fallback to default
+            default_path = resource_path(os.path.join("PIC", "ee.png"))
+            if os.path.exists(default_path):
+                self.pointer_pixmap = QPixmap(default_path)
+                self.pointer_image_path = default_path # Update path ref
+                # Default calibration for ee.png
+                self.pointer_angle_offset = 335
+            else:
+                self.pointer_pixmap = None
 
-    def load_tick_sound(self):
-        """載入滴答音效"""
-        wav_path = resource_path("tick.wav")
-        if os.path.exists(wav_path):
-            try:
-                with open(wav_path, 'rb') as f:
-                    self.tick_sound_data = f.read()
-            except:
-                self.tick_sound_data = None
-        else:
-            self.tick_sound_data = None
+    def set_window_mode(self, mode):
+        """設定視窗模式"""
+        if self.edit_mode:
+            return
+
+        # 保存當前幾何形狀
+        geo = self.geometry()
+        
+        # 重置旗標
+        flags = Qt.FramelessWindowHint
+        
+        if mode == 'top':
+            flags |= Qt.WindowStaysOnTopHint
+        # 'normal' (or any other value) 則不加額外旗標
+            
+        self.setWindowFlags(flags)
+        self.show()
+        self.setGeometry(geo)
+
+
+
+    def load_sounds(self):
+        """載入音效資源 (支援 mp3/wav)"""
+        # Tick Sound
+        tick_path = self.find_audio_file("tick")
+        self.using_mp3_tick = False
+        if tick_path:
+            if tick_path.lower().endswith(".mp3"):
+                self.using_mp3_tick = True
+                self.tick_player.setSource(QUrl.fromLocalFile(tick_path))
+                self.tick_audio.setVolume(1.0)
+                # Ensure QSoundEffect is empty
+                self.tick_effect.setSource(QUrl()) 
+            else:
+                self.tick_effect.setSource(QUrl.fromLocalFile(tick_path))
+                self.tick_effect.setVolume(1.0) # 0.0 - 1.0
+                # Ensure QMediaPlayer is empty
+                self.tick_player.setSource(QUrl())
+
+        # Finish Sound
+        finish_path = self.find_audio_file("finish")
+        self.default_finish_path = finish_path
+        if finish_path:
+            self.finish_player.setSource(QUrl.fromLocalFile(finish_path))
+            self.finish_audio.setVolume(1.0)
+            
+        # Connect Error Signals (Add logging)
+        self.finish_player.errorOccurred.connect(lambda error, msg=self.finish_player.errorString(): self.on_audio_error("FinishPlayer", error, msg))
+        self.loop_player.errorOccurred.connect(lambda error, msg=self.loop_player.errorString(): self.on_audio_error("LoopPlayer", error, msg))
+
+        # Loop Sound
+        loop_path = self.find_audio_file("loop")
+        if loop_path:
+            self.loop_player.setSource(QUrl.fromLocalFile(loop_path))
+            self.loop_player.setLoops(QMediaPlayer.Infinite) # 設定無限循環
+            self.loop_audio.setVolume(1.0)
+
+    def release_audio_locks(self):
+        """釋放所有音效檔案鎖定 (用於匯入/刪除時)"""
+        self.tick_effect.stop()
+        self.tick_effect.setSource(QUrl())
+        self.tick_player.stop()
+        self.tick_player.setSource(QUrl())
+        
+        self.finish_player.stop()
+        self.finish_player.setSource(QUrl())
+        
+        self.loop_player.stop()
+        self.loop_player.setSource(QUrl())
+
+    def find_audio_file(self, basename):
+        """搜尋音效檔案 (優先 SOUND 資料夾, 其次根目錄; 優先 mp3, 其次 wav)"""
+        # 1. Check SOUND folder
+        sound_dir_base = os.path.join("SOUND", basename)
+        for ext in [".mp3", ".wav"]:
+            path = external_path(sound_dir_base + ext)
+            if os.path.exists(path):
+                return path
+                
+        # 2. Check Root folder (Legacy)
+        for ext in [".mp3", ".wav"]:
+            path = external_path(basename + ext)
+            if os.path.exists(path):
+                return path
+        return None
         
     def preview_opacity(self):
         """預覽透明度"""
@@ -205,6 +303,8 @@ class WheelWindow(QWidget):
         self.separator_enabled = separator_enabled
         self.sound_enabled = sound_enabled
         self.continuous_sound_enabled = continuous_sound_enabled
+        if not self.continuous_sound_enabled:
+            self.loop_player.stop()
         self.finish_sound_enabled = finish_sound_enabled
         self.result_opacity = result_opacity
         self.show_pointer_line = show_pointer_line
@@ -260,28 +360,38 @@ class WheelWindow(QWidget):
 
     def play_tick_sound(self, freq=600):
         """播放滴答音效"""
-        try:
-            wav_path = resource_path("tick.wav")
-            if self.sound_enabled and os.path.exists(wav_path):
-                winsound.PlaySound(wav_path, winsound.SND_FILENAME | winsound.SND_ASYNC)
-            elif self.sound_enabled:
-                winsound.Beep(600, 20)
-        except Exception as e:
-            pass
+        if self.sound_enabled:
+             if self.using_mp3_tick:
+                 if self.tick_player.source().isValid():
+                     if self.tick_player.playbackState() == QMediaPlayer.PlayingState:
+                         self.tick_player.stop()
+                     self.tick_player.play()
+             else:
+                 if self.tick_effect.source().isValid():
+                     # QSoundEffect 適合短促音效
+                     self.tick_effect.play()
+                 else:
+                     pass
 
-    def play_finish_sound(self):
-        """播放結束音效"""
-        try:
-            if not self.finish_sound_enabled:
-                return
+    def play_finish_sound(self, custom_path=None):
+        """播放結束音效 (支援自訂路徑)"""
+        # 如果全域結束音效未啟用，則完全不播放 (包含自訂音效)
+        if not self.finish_sound_enabled:
+            return
+
+        target_path = custom_path
+        
+        # 如果沒有自訂音效，使用預設音效
+        if not target_path:
+            target_path = getattr(self, 'default_finish_path', None)
             
-            wav_path = resource_path("finish.wav")
-            if os.path.exists(wav_path):
-                winsound.PlaySound(wav_path, winsound.SND_FILENAME | winsound.SND_ASYNC)
-            else:
-                winsound.Beep(1000, 200)
-        except:
-            pass
+        # 強制停止循環音效 (確保切斷)
+        self.loop_player.stop()
+            
+        if target_path and os.path.exists(target_path):
+            self.finish_player.stop()
+            self.finish_player.setSource(QUrl.fromLocalFile(target_path))
+            self.finish_player.play()
 
     def auto_spin(self, speed_multiplier=1.0):
         """自動旋轉（用於連抽）"""
@@ -311,12 +421,8 @@ class WheelWindow(QWidget):
         self.is_spinning = True
         
         if self.continuous_sound_enabled:
-            try:
-                wav_path = resource_path("tick.wav")
-                if os.path.exists(wav_path):
-                    winsound.PlaySound(wav_path, winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_LOOP)
-            except:
-                pass
+            if self.loop_player.source().isValid():
+                self.loop_player.play()
                 
         self.timer.start(25)
 
@@ -337,10 +443,7 @@ class WheelWindow(QWidget):
             self.timer.stop()
             
             if self.continuous_sound_enabled:
-                try:
-                    winsound.PlaySound(None, winsound.SND_PURGE)
-                except:
-                    pass
+                self.loop_player.stop()
                     
             self.on_spin_finished()
 
@@ -353,7 +456,8 @@ class WheelWindow(QWidget):
              effective_angle = (90 + final_angle) % 360
         else:
              # 經典模式
-             effective_angle = (self.classic_pointer_angle - final_angle) % 360
+             # classic_pointer_angle 是順時針 (Visual)，轉為逆時針 (Qt) 需要負號
+             effective_angle = (-self.classic_pointer_angle - final_angle) % 360
         
         current_angle = 0
         total_weight = sum(item['weight'] for item in self.items)
@@ -373,7 +477,18 @@ class WheelWindow(QWidget):
         self.result_text = f"{winner_name} "
         self.update()
         self.spin_finished.emit(winner_name)
-        self.play_finish_sound()
+        
+        # 檢查是否有選項專屬音效
+        custom_sound_path = None
+        winner_item = next((i for i in self.items if i['name'] == winner_name), None)
+        if winner_item and winner_item.get('sound_enable', False):
+            s_file = winner_item.get('sound_file', "")
+            if s_file:
+                path = external_path(os.path.join("SOUND", s_file))
+                if os.path.exists(path):
+                    custom_sound_path = path
+
+        self.play_finish_sound(custom_sound_path)
         self.result_timer.start()
 
     def spin(self):
@@ -436,24 +551,86 @@ class WheelWindow(QWidget):
             else:
                 painter.setPen(Qt.black)
             
-            calc_size = int(radius / 15)
-            font_size = max(8, calc_size)
-            if font_size <= 0: font_size = 8
+            raw_text = item['name']
+            text_len = len(raw_text)
+            
+            # Chord calculation (still useful for height constraint)
+            # Text moved outwards, so mid-radius increases
+            mid_radius = radius * 0.70 
+            available_chord = 2 * mid_radius * math.sin(math.radians(span_angle / 2))
+            
+            # Auto-scale font size based on angle (Scope)
+            # Chord length at roughly mid-text radius (0.55R approx)
+            mid_radius = radius * 0.55
+            available_chord = 2 * mid_radius * math.sin(math.radians(span_angle / 2))
+            
+            # Base size based on wheel radius
+            base_size = int(radius / 15)
+            
+            # Dynamic scaling based on scope (chord length)
+            # If chord is small, shrink the target base size
+            target_size = base_size
+            if available_chord < base_size * 3:
+                 target_size = int(available_chord / 1.5)
+            
+            # Logic Update:
+            # Avoid Double Shrinking for Long Text
+            
+            if text_len > 6:
+                if target_size < base_size:
+                    # Already shrunk by scope (narrow wedge)
+                    # Don't shrink further, or it becomes unreadable (User: "Too small")
+                    final_size = target_size
+                else:
+                    # Wide wedge, but long text
+                    # Shrink slightly to fit length
+                    final_size = int(base_size * 0.8)
+            else:
+                final_size = target_size
+
+            # Ensure minimum size (User Request: 10)
+            font_size = max(10, final_size)
+            
+            # Constraint: Never expand beyond default base_size
+            # (User Request: "不額外擴大超過預設大小")
+            # This handles the case where max(10, ...) might inflate text on a tiny wheel
+            font_size = min(font_size, base_size)
+
             try:
                 self.wheel_font.setPointSize(font_size)
             except:
-                self.wheel_font.setPointSize(8)
+                self.wheel_font.setPointSize(10)
             painter.setFont(self.wheel_font)
             
-            text_rect_width = radius * 0.55
-            text_rect_height = radius * 0.35
-            text_rect = QRectF(radius * 0.35, -text_rect_height/2, text_rect_width, text_rect_height)
+            # Text Placement Logic:
+            # Outer Edge: 0.95R (User request)
+            # Inner Edge: 0.18R (Clear of 0.15R hub)
+            # Alignment: Right-aligned (Text sits at outer edge, grows inward)
             
-            raw_text = item['name']
+            text_start = radius * 0.18
+            text_end = radius * 0.95
+            text_rect_width = text_end - text_start
+            
+            # Constraints:
+            # User Rule: If text length <= 6, MUST SHOW completely (allow overlap).
+            # If > 6, fully visible too (relaxed height).
+            
+            if text_len <= 6:
+                # Relaxed height for short text to ensure visibility
+                text_rect_height = radius * 0.5 # Give plenty of vertical space
+            else:
+                 # Relaxed for long text too, relying on proper width/font
+                 text_rect_height = max(radius * 0.35, available_chord * 0.9) 
+            
+            # Start at determined position
+            text_rect = QRectF(text_start, -text_rect_height/2, text_rect_width, text_rect_height)
+            
+            # Fixed wrapping limit
+            limit = 9
+                
             words = raw_text.split(' ')
             lines = []
             current_line = ""
-            limit = 9
             
             for word in words:
                 if len(word) > limit:
@@ -476,8 +653,30 @@ class WheelWindow(QWidget):
             if current_line:
                 lines.append(current_line)
             
-            display_text = "\n".join(lines)
-            painter.drawText(text_rect, display_text, self.text_doc_option)
+            # Manual drawing for tighter line spacing
+            fm = painter.fontMetrics()
+            # 0.85 factor to reduce spacing (tighter than default)
+            line_height = fm.height() * 0.85 
+            total_text_height = len(lines) * line_height
+            
+            # Ensure text_rect_height is enough for content
+            # We ignore available_chord constraint to prevent clipping (User Request)
+            text_rect_height = max(radius * 0.35, total_text_height * 1.2)
+            
+            # Update rect height if needed (though we defined it loosely above)
+            # Re-center Y based on actual height
+            text_rect.setHeight(text_rect_height)
+            text_rect.moveTop(-text_rect_height/2)
+
+            # Start Y to center the block vertically in the available text_rect
+            current_y = text_rect.center().y() - (total_text_height / 2)
+            
+            for line in lines:
+                line_rect = QRectF(text_rect.x(), current_y, text_rect.width(), line_height)
+                # Revert to AlignRight (Extend Inwards)
+                painter.drawText(line_rect, Qt.AlignRight | Qt.AlignVCenter, line)
+                current_y += line_height
+                
             painter.restore()
             
             start_angle += span_angle
@@ -520,8 +719,6 @@ class WheelWindow(QWidget):
 
         if self.edit_mode and len(self.items) > 1:
             for i, angle in enumerate(separator_angles):
-                if i == len(self.items) - 1:
-                    continue
                 
                 rad = math.radians(angle)
                 hx = center.x() + radius * math.cos(rad)
@@ -748,6 +945,11 @@ class WheelWindow(QWidget):
     
     def closeEvent(self, event):
         """視窗關閉事件"""
+        # 確保關閉時停止所有音效
+        self.loop_player.stop()
+        self.finish_player.stop()
+        self.tick_effect.stop()
+            
         self.window_closed.emit()
         super().closeEvent(event)
 
@@ -761,8 +963,6 @@ class WheelWindow(QWidget):
         threshold = 20
         
         for i, item in enumerate(self.items):
-            if i == len(self.items) - 1:
-                continue
             weight = item['weight']
             span_angle = (weight / total_weight) * 360 if total_weight > 0 else 360
             start_angle += span_angle
@@ -791,25 +991,62 @@ class WheelWindow(QWidget):
                 weight_before += self.items[k]['weight']
             angle_start_current_rel = (weight_before / total_weight) * 360
             angle_start_current_abs = (self._rotation_angle + angle_start_current_rel) % 360
-            diff = current_mouse_angle - angle_start_current_abs
-            while diff < 0:
-                diff += 360
-            while diff >= 360:
-                diff -= 360
-            new_span_current = diff
-            combined_weight = item_current['weight'] + item_next['weight']
-            combined_span = (combined_weight / total_weight) * 360
-            min_span = (total_weight * 0.005 / total_weight) * 360
-            if new_span_current < min_span:
-                return
-            if new_span_current > combined_span - min_span:
-                return
-            new_weight_current = (new_span_current / 360.0) * total_weight
-            new_weight_next = combined_weight - new_weight_current
-            if new_weight_current < 0 or new_weight_next < 0:
-                return
-            item_current['weight'] = new_weight_current
-            item_next['weight'] = new_weight_next
+            # Special handling for the last (0-degree) separator
+            if i == n - 1:
+                # 0-degree handle controls the boundary between Last Item (current) and First Item (next)
+                # This boundary IS the rotation angle (Start of First Item)
+                
+                # We want to move the "Start of First Item" to `current_mouse_angle`
+                # while keeping "Start of Last Item" and "End of First Item" visually fixed.
+                
+                # 1. Calculate the fixed visual start of the Last Item
+                visual_start_last = (self._rotation_angle + angle_start_current_rel) % 360
+                
+                # 2. Calculate new span for Last Item based on mouse position
+                # New Span = Mouse - Visual Start Last
+                new_span_last = current_mouse_angle - visual_start_last
+                while new_span_last < 0: new_span_last += 360
+                while new_span_last >= 360: new_span_last -= 360
+                
+                combined_weight = item_current['weight'] + item_next['weight']
+                combined_span = (combined_weight / total_weight) * 360
+                
+                min_span = (total_weight * 0.005 / total_weight) * 360
+                
+                if new_span_last < min_span: return
+                if new_span_last > combined_span - min_span: return
+                
+                new_weight_last = (new_span_last / 360.0) * total_weight
+                new_weight_first = combined_weight - new_weight_last
+                
+                item_current['weight'] = new_weight_last
+                item_next['weight'] = new_weight_first
+                
+                # 3. Update rotation angle!
+                # The boundary (Start of First) is now at mouse angle
+                self._rotation_angle = current_mouse_angle
+                
+            else:
+                diff = current_mouse_angle - angle_start_current_abs
+                while diff < 0:
+                    diff += 360
+                while diff >= 360:
+                    diff -= 360
+                new_span_current = diff
+                combined_weight = item_current['weight'] + item_next['weight']
+                combined_span = (combined_weight / total_weight) * 360
+                min_span = (total_weight * 0.005 / total_weight) * 360
+                if new_span_current < min_span:
+                    return
+                if new_span_current > combined_span - min_span:
+                    return
+                new_weight_current = (new_span_current / 360.0) * total_weight
+                new_weight_next = combined_weight - new_weight_current
+                if new_weight_current < 0 or new_weight_next < 0:
+                    return
+                item_current['weight'] = new_weight_current
+                item_next['weight'] = new_weight_next
+                
             self.weights_changed.emit()
             self.update()
         except Exception as e:

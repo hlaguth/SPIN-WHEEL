@@ -6,16 +6,103 @@ from PySide6.QtWidgets import (
     QListWidget, QListWidgetItem, QColorDialog, QCheckBox, 
     QMessageBox, QDoubleSpinBox, QLabel, QGroupBox, QFormLayout,
     QInputDialog, QSlider, QFileDialog, QRadioButton, QButtonGroup,
-    QSpinBox, QComboBox
+    QSpinBox, QComboBox, QDialog
 )
 from PySide6.QtGui import QColor, QFont, QPainter, QBrush, QPen, QCursor
-from PySide6.QtCore import Qt, QTimer, Signal, QRectF, QSize
+from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+from PySide6.QtCore import Qt, QTimer, Signal, QRectF, QSize, QUrl
 from collections import Counter
 from wheel_window import WheelWindow
-from utils import resource_path
+from utils import resource_path, external_path
 from calibration_dialog import ImageCalibrationDialog
+import csv
+import shutil
 
 SETTINGS_FILE = resource_path("settings.json")
+
+
+class SoundConflictDialog(QDialog):
+    """音效衝突解決對話框"""
+    def __init__(self, parent, file_keep, file_new):
+        super().__init__(parent)
+        self.setWindowTitle("音效衝突 - 選擇要保留的檔案")
+        self.setWindowModality(Qt.WindowModal)
+        self.resize(500, 200)
+        self.selected_action = None # 'keep_old', 'replace_new', None(cancel)
+        
+        layout = QVBoxLayout(self)
+        
+        info_lbl = QLabel(f"偵測到同名但不同格式的音效檔！\n系統只能保留其中一個 (MP3優先於WAV)。\n請試聽並選擇要留下的檔案：")
+        layout.addWidget(info_lbl)
+        
+        # Comparison Layout
+        comp_layout = QHBoxLayout()
+        
+        # Left: Existing/Keep (The one that was already there or alternate format)
+        # Actually logic is: File A (Old/Existing?) vs File B (New/Importing?)
+        # Let's call them "既有檔案" vs "新匯入檔案"
+        # Since we are detecting conflict, usually we have one on disk and one currently being imported (temp source).
+        # Or if both are on disk (renaming case)?
+        # Implementation: We passed in paths.
+        
+        self.file_keep = file_keep # The one that might be deleted if we choose new
+        self.file_new = file_new   # The one providing replacement
+        
+        self.player = QMediaPlayer()
+        self.audio_output = QAudioOutput()
+        self.player.setAudioOutput(self.audio_output)
+        self.audio_output.setVolume(1.0)
+        self.player.errorOccurred.connect(lambda error, msg=self.player.errorString(): print(f"Preview Error: {error} - {msg}"))
+        
+        # --- File A (Existing/Conflict) ---
+        group_a = QGroupBox(f"保留: {os.path.basename(file_keep)}")
+        layout_a = QVBoxLayout(group_a)
+        btn_play_a = QPushButton("▶ 試聽")
+        btn_play_a.clicked.connect(lambda: self.play_sound(file_keep))
+        btn_select_a = QPushButton("保留此檔")
+        btn_select_a.clicked.connect(self.choose_keep)
+        layout_a.addWidget(btn_play_a)
+        layout_a.addWidget(btn_select_a)
+        comp_layout.addWidget(group_a)
+        
+        # --- File B (New/Importing) ---
+        group_b = QGroupBox(f"使用新檔: {os.path.basename(file_new)}")
+        layout_b = QVBoxLayout(group_b)
+        btn_play_b = QPushButton("▶ 試聽")
+        btn_play_b.clicked.connect(lambda: self.play_sound(file_new))
+        btn_select_b = QPushButton("使用新檔")
+        btn_select_b.clicked.connect(self.choose_new)
+        layout_b.addWidget(btn_play_b)
+        layout_b.addWidget(btn_select_b)
+        comp_layout.addWidget(group_b)
+        
+        layout.addLayout(comp_layout)
+        
+        btn_cancel = QPushButton("取消匯入")
+        btn_cancel.clicked.connect(self.reject)
+        layout.addWidget(btn_cancel)
+
+    def play_sound(self, path):
+        self.player.stop()
+        self.player.setSource(QUrl.fromLocalFile(path))
+        self.player.play()
+        
+    def choose_keep(self):
+        self.player.stop()
+        self.player.setSource(QUrl())
+        self.selected_action = 'keep_old' # Keep the conflicting one (reject new)
+        self.accept()
+        
+    def choose_new(self):
+        self.player.stop()
+        self.player.setSource(QUrl())
+        self.selected_action = 'replace_new' # Use the new one (delete conflicting)
+        self.accept()
+        
+    def closeEvent(self, event):
+        self.player.stop()
+        self.player.setSource(QUrl())
+        super().closeEvent(event)
 
 
 class CollapsibleBox(QWidget):
@@ -65,8 +152,10 @@ class CollapsibleBox(QWidget):
 class ItemWidget(QWidget):
     """選項列表項目元件"""
     toggled = Signal(bool)
+    sound_toggled = Signal(bool)
+    import_clicked = Signal()
     
-    def __init__(self, name, weight, color, prob, enabled):
+    def __init__(self, name, weight, color, prob, enabled, sound_enabled):
         super().__init__()
         layout = QHBoxLayout()
         layout.setContentsMargins(10, 8, 10, 8)
@@ -89,19 +178,47 @@ class ItemWidget(QWidget):
         
         layout.addStretch()
         
+        # 音效設定
+        self.sound_check = QCheckBox("音效")
+        self.sound_check.setChecked(sound_enabled)
+        self.sound_check.toggled.connect(self.on_sound_toggled)
+        layout.addWidget(self.sound_check)
+        
+        self.import_btn = QPushButton("匯入音效")
+        self.import_btn.setFixedSize(70, 25)
+        self.import_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2196F3;
+                color: white;
+                border: none;
+                border-radius: 3px;
+                font-size: 12px;
+                padding: 0px;
+            }
+            QPushButton:hover {
+                background-color: #1976D2;
+            }
+        """)
+        self.import_btn.clicked.connect(self.import_clicked.emit)
+        layout.addWidget(self.import_btn)
+        
         self.setLayout(layout)
         
     def on_toggled(self, checked):
         """核取方塊切換事件"""
         self.toggled.emit(checked)
 
+    def on_sound_toggled(self, checked):
+        """音效切換事件"""
+        self.sound_toggled.emit(checked)
+
 class ConfigWindow(QWidget):
     """設定視窗主類別"""
     def __init__(self):
         super().__init__()
         self.setWindowTitle("轉盤設定")
-        self.resize(600, 700)
-        self.setMinimumWidth(600)
+        self.resize(550, 700)
+        self.setMinimumWidth(550)
         self.setStyleSheet("""
             QWidget {
                 font-family: "Microsoft JhengHei", sans-serif;
@@ -159,9 +276,11 @@ class ConfigWindow(QWidget):
         
         self.items = []
         self.wheel_window = None
-        self.editing_index = -1
+        self.test_window = None
+        self.current_file_path = None # Track current file
         
-        self.history_data = []
+        self.history_sessions = [{"data": [], "memo": ""}]
+        self.curr_session_idx = 0
         self.history_grouped = True
         self.panel_expanded = False
         self.history_panel_width = 300
@@ -177,20 +296,22 @@ class ConfigWindow(QWidget):
         self.sound_enabled = False
         self.finish_sound_enabled = False
         self.result_opacity = 150
-        self.always_on_top = True
-        self.pre_expand_width = 600
+        self.result_opacity = 150
+        self.always_on_top = True # Legacy boolean, keeping just in case
+        self.window_mode = 'top' # 'top', 'tool', 'normal'
+        self.pre_expand_width = 400
         
         self.wheel_mode = "classic" # "classic" 或 "image"
         self.wheel_mode = "classic" # "classic" 或 "image"
-        self.pointer_image_path = resource_path("PIC/ee.png")
-        self.pointer_angle_offset = 0
-        self.pointer_angle_offset = 0
-        self.pointer_scale = 1.0
+        self.pointer_image_path = resource_path(os.path.join("PIC", "ARR.png"))
+        self.pointer_angle_offset = 135
+        self.pointer_scale = 0.4
         self.spin_speed_multiplier = 1.0 # 速度倍率 (1.0 = 正常)
         self.allowed_speeds = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 7.5, 10.0]
         self.classic_pointer_angle = 0
         self.center_text = "GO"
         self.show_pointer_line = True
+        self.editing_index = -1
         
         self.init_ui()
         self.load_last_settings()
@@ -198,8 +319,9 @@ class ConfigWindow(QWidget):
     def init_ui(self):
         """初始化使用者介面"""
         main_layout = QVBoxLayout()
-        main_layout.setSpacing(15)
-        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(5)
+        main_layout.setContentsMargins(20, 5, 10, 5)
+        self.setMinimumSize(400, 400)
         
         self.input_group = CollapsibleBox("新增/編輯選項")
         input_layout = QFormLayout()
@@ -252,20 +374,31 @@ class ConfigWindow(QWidget):
         self.mode_group.buttonClicked.connect(self.on_mode_changed)
         mode_layout.addWidget(self.mode_classic_radio)
         mode_layout.addWidget(self.mode_image_radio)
+        
+        mode_layout.addSpacing(20)
+        mode_layout.addWidget(QLabel("置頂方式:"))
+        
+        # Window Mode Combo (Move here)
+        self.window_mode_combo = QComboBox()
+        self.window_mode_combo.addItems(["置頂", "普通"])
+        self.window_mode_combo.currentIndexChanged.connect(self.on_window_mode_changed)
+        mode_layout.addWidget(self.window_mode_combo)
+        
+        mode_layout.addStretch()
         style_layout.addRow("轉盤模式:", mode_layout)
         
         # 圖片模式設定區塊
         self.image_mode_container = QWidget()
         image_mode_layout = QHBoxLayout(self.image_mode_container)
         image_mode_layout.setContentsMargins(0, 0, 0, 0)
-        image_mode_layout.setSpacing(10)
+        image_mode_layout.setSpacing(5)
         
         image_mode_layout.addWidget(QLabel("指針圖片:"))
         
         self.image_path_label = QLabel("未選擇圖片")
         image_mode_layout.addWidget(self.image_path_label)
         
-        self.image_select_btn = QPushButton("選擇圖片...")
+        self.image_select_btn = QPushButton("選擇圖片")
         self.image_select_btn.clicked.connect(self.select_pointer_image)
         image_mode_layout.addWidget(self.image_select_btn)
         
@@ -342,37 +475,76 @@ class ConfigWindow(QWidget):
         # 結果設定 (顏色與透明度)
         result_layout = QHBoxLayout()
         
-        self.result_color_btn = QPushButton("結果文字顏色")
+        self.result_color_btn = QPushButton("文字顏色")
         self.result_color_btn.clicked.connect(self.choose_result_color)
-        self.result_color_btn.setMinimumWidth(140)  # Ensure text fits
+        # self.result_color_btn.setMinimumWidth(100) 
         self.update_result_color_btn()
-        result_layout.addWidget(self.result_color_btn)
+        result_layout.addWidget(self.result_color_btn, 1) # stretch factor 1
         
-        self.result_bg_color_btn = QPushButton("結果背景顏色")
+        self.result_bg_color_btn = QPushButton("背景顏色")
         self.result_bg_color_btn.clicked.connect(self.choose_result_bg_color)
-        self.result_bg_color_btn.setMinimumWidth(140)  # Ensure text fits
+        # self.result_bg_color_btn.setMinimumWidth(100)
         self.update_result_bg_color_btn()
-        result_layout.addWidget(self.result_bg_color_btn)
+        result_layout.addWidget(self.result_bg_color_btn, 1) # stretch factor 1
         
-        style_layout.addRow(result_layout)
-        
-        # 透明度設定
-        opacity_layout = QHBoxLayout()
-        opacity_layout.addWidget(QLabel("背景不透明度:"))
+        # 透明度設定 (整合進同一行)
+        #result_layout.addSpacing(1)
+        result_layout.addWidget(QLabel("不透明度:"))
         
         self.opacity_slider = QSlider(Qt.Horizontal)
         self.opacity_slider.setRange(0, 100)
         self.opacity_slider.setValue(60)
-        self.opacity_slider.setFixedWidth(200)
+        self.opacity_slider.setFixedWidth(120) # 稍微縮小滑桿寬度
         self.opacity_slider.valueChanged.connect(self.on_opacity_changed)
         self.opacity_slider.sliderReleased.connect(self.save_settings)
-        opacity_layout.addWidget(self.opacity_slider)
+        result_layout.addWidget(self.opacity_slider)
         
         self.opacity_label = QLabel("60%")
-        opacity_layout.addWidget(self.opacity_label)
-        opacity_layout.addStretch()
+        self.opacity_label.setFixedWidth(45)
+        result_layout.addWidget(self.opacity_label)
         
-        style_layout.addRow(opacity_layout)
+        style_layout.addRow(result_layout)
+
+        # 音效設定
+        self.sound_container = QWidget()
+        sound_multi_layout = QHBoxLayout(self.sound_container)
+        sound_multi_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.sound_check = QCheckBox("旋轉音效")
+        self.sound_check.setChecked(False)
+        self.sound_check.stateChanged.connect(self.update_wheel_settings)
+        sound_multi_layout.addWidget(self.sound_check)
+
+        self.continuous_sound_check = QCheckBox("持續音效")
+        self.continuous_sound_check.setChecked(False)
+        self.continuous_sound_check.stateChanged.connect(self.update_wheel_settings)
+        sound_multi_layout.addWidget(self.continuous_sound_check)
+
+        self.finish_sound_check = QCheckBox("結束音效 ")
+        self.finish_sound_check.setChecked(False)
+        self.finish_sound_check.stateChanged.connect(self.update_wheel_settings)
+        sound_multi_layout.addWidget(self.finish_sound_check)
+        
+        # 匯入音效按鈕
+        self.import_sound_btn = QPushButton("匯入音效")
+        self.import_sound_btn.clicked.connect(self.import_custom_sound)
+        self.import_sound_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2196F3;
+                color: white;
+                border: none;
+                padding: 5px 10px;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #1976D2;
+            }
+        """)
+        sound_multi_layout.addWidget(self.import_sound_btn)
+        
+        sound_multi_layout.addStretch()
+        
+        style_layout.addRow(self.sound_container)
 
         # 旋轉速度
         speed_layout = QHBoxLayout()
@@ -403,29 +575,12 @@ class ConfigWindow(QWidget):
         self.multi_spin_setup_btn.setEnabled(False)
         self.multi_spin_setup_btn.setStyleSheet("background-color: #9E9E9E;")
         speed_layout.addWidget(self.multi_spin_setup_btn)
+        
+        speed_layout.addSpacing(10)
+        
+        # Window Mode Combo moved up
+        
         style_layout.addRow("旋轉速度:", speed_layout)
-        
-        # 音效設定
-        sound_multi_layout = QHBoxLayout()
-        
-        self.sound_check = QCheckBox("啟用音效 (Tick)")
-        self.sound_check.setChecked(False)
-        self.sound_check.stateChanged.connect(self.update_wheel_settings)
-        sound_multi_layout.addWidget(self.sound_check)
-
-        self.continuous_sound_check = QCheckBox("持續音效 (Loop)")
-        self.continuous_sound_check.setChecked(False)
-        self.continuous_sound_check.stateChanged.connect(self.update_wheel_settings)
-        sound_multi_layout.addWidget(self.continuous_sound_check)
-
-        self.finish_sound_check = QCheckBox("啟用結束音效 (Finish)")
-        self.finish_sound_check.setChecked(False)
-        self.finish_sound_check.stateChanged.connect(self.update_wheel_settings)
-        sound_multi_layout.addWidget(self.finish_sound_check)
-        
-        sound_multi_layout.addStretch()
-        
-        style_layout.addRow("音效:", sound_multi_layout)
 
         self.style_group.setContentLayout(style_layout)
         main_layout.addWidget(self.style_group)
@@ -498,12 +653,37 @@ class ConfigWindow(QWidget):
         hist_layout = QVBoxLayout(self.history_container)
         hist_layout.setContentsMargins(10, 10, 10, 10)
         
-        hist_title = QLabel("轉動紀錄")
-        hist_title.setStyleSheet("font-size: 16px; font-weight: bold;")
-        hist_layout.addWidget(hist_title)
+        hist_title_layout = QHBoxLayout()
+        self.hist_title_lbl = QLabel(f"轉動紀錄 ({self.curr_session_idx + 1})")
+        self.hist_title_lbl.setStyleSheet("font-size: 16px; font-weight: bold;")
+        hist_title_layout.addWidget(self.hist_title_lbl)
+        
+        hist_title_layout.addStretch()
+        
+        self.hist_clear_btn = QPushButton("清空此頁")
+        self.hist_clear_btn.setStyleSheet("padding: 2px; background-color: #d32f2f; font-size: 10pt;")
+        self.hist_clear_btn.setFixedSize(60, 25)
+        self.hist_clear_btn.clicked.connect(self.clear_history)
+        hist_title_layout.addWidget(self.hist_clear_btn)
+        
+        self.prev_session_btn = QPushButton("＜")
+        self.prev_session_btn.setFixedSize(30, 25)
+        self.prev_session_btn.setStyleSheet("padding: 0; background-color: #4CAF50;") # 覆蓋全域 padding
+        self.prev_session_btn.clicked.connect(self.prev_session)
+        self.prev_session_btn.setEnabled(False)
+        hist_title_layout.addWidget(self.prev_session_btn)
+        
+        self.next_session_btn = QPushButton("＞")
+        self.next_session_btn.setFixedSize(30, 25)
+        self.next_session_btn.setStyleSheet("padding: 0; background-color: #4CAF50;") # 覆蓋全域 padding
+        self.next_session_btn.clicked.connect(self.next_session)
+        hist_title_layout.addWidget(self.next_session_btn)
+        
+        hist_layout.addLayout(hist_title_layout)
         
         self.history_memo = QLineEdit()
-        self.history_memo.setPlaceholderText("備註 (清空時移除)")
+        self.history_memo.setPlaceholderText("備註 (跟隨此紀錄)")
+        self.history_memo.textChanged.connect(self.save_current_memo)
         hist_layout.addWidget(self.history_memo)
         
         self.hist_view_btn = QPushButton("切換：合併顯示")
@@ -511,12 +691,23 @@ class ConfigWindow(QWidget):
         hist_layout.addWidget(self.hist_view_btn)
         
         self.history_list = QListWidget()
+        self.history_list.setSelectionMode(QListWidget.NoSelection) # 禁止選取
         hist_layout.addWidget(self.history_list)
         
-        hist_clear_btn = QPushButton("清空紀錄")
-        hist_clear_btn.setStyleSheet("background-color: #d32f2f;")
-        hist_clear_btn.clicked.connect(self.clear_history)
-        hist_layout.addWidget(hist_clear_btn)
+        # Bottom controls for history
+        hist_bottom_layout = QHBoxLayout()
+        
+        self.clear_all_btn = QPushButton("清除全部")
+        self.clear_all_btn.setStyleSheet("background-color: #b71c1c;")
+        self.clear_all_btn.clicked.connect(self.clear_all_history)
+        hist_bottom_layout.addWidget(self.clear_all_btn)
+        
+        self.export_csv_btn = QPushButton("匯出 CSV")
+        self.export_csv_btn.setStyleSheet("background-color: #009688;")
+        self.export_csv_btn.clicked.connect(self.export_history_csv)
+        hist_bottom_layout.addWidget(self.export_csv_btn)
+        
+        hist_layout.addLayout(hist_bottom_layout)
         
         outer_layout = QHBoxLayout()
         outer_layout.setContentsMargins(0, 0, 0, 0)
@@ -534,14 +725,16 @@ class ConfigWindow(QWidget):
         self.expand_btn.setFixedSize(30, 60)
         self.expand_btn.setStyleSheet("""
             QPushButton {
-                background-color: #eee;
-                border: 1px solid #ccc;
+                background-color: black;
+                color: white;
+                border: 1px solid #333;
                 border-top-left-radius: 10px;
                 border-bottom-left-radius: 10px;
                 font-weight: bold;
+                padding: 0px;
             }
             QPushButton:hover {
-                background-color: #ddd;
+                background-color: #333;
             }
         """)
         self.expand_btn.clicked.connect(self.toggle_history_panel)
@@ -561,8 +754,8 @@ class ConfigWindow(QWidget):
             self.history_container.setFixedWidth(0)
             self.expand_btn.setText("▶")
             target_width = self.pre_expand_width
-            if target_width < 600:
-                target_width = 600
+            if target_width < 550:
+                target_width = 550
             
             self.layout().activate()
             self.resize(target_width, self.height())
@@ -579,7 +772,7 @@ class ConfigWindow(QWidget):
             
     def add_history_record(self, winner_name):
         """新增歷史紀錄"""
-        self.history_data.append(winner_name)
+        self.history_sessions[self.curr_session_idx]['data'].append(winner_name)
         if self.panel_expanded:
             self.update_history_list()
             
@@ -665,19 +858,31 @@ class ConfigWindow(QWidget):
     def update_history_list(self):
         """更新歷史紀錄列表"""
         self.history_list.clear()
-        if not self.history_data:
+        
+        current_data = self.history_sessions[self.curr_session_idx]['data']
+        current_memo = self.history_sessions[self.curr_session_idx]['memo']
+        
+        # update memo without triggering signal loop if possible, or just set it
+        self.history_memo.blockSignals(True)
+        self.history_memo.setText(current_memo)
+        self.history_memo.blockSignals(False)
+        
+        self.hist_title_lbl.setText(f"轉動紀錄 ({self.curr_session_idx + 1})")
+        self.prev_session_btn.setEnabled(self.curr_session_idx > 0)
+        
+        if not current_data:
             return
         
         if self.history_grouped:
             self.hist_view_btn.setText("切換：個別顯示")
-            counts = Counter(self.history_data)
+            counts = Counter(current_data)
             for name, count in counts.most_common():
                 item = QListWidgetItem(f"{name} x{count}")
                 item.setTextAlignment(Qt.AlignCenter)
                 self.history_list.addItem(item)
         else:
             self.hist_view_btn.setText("切換：合併顯示")
-            for name in reversed(self.history_data):
+            for name in reversed(current_data):
                 item = QListWidgetItem(name)
                 item.setTextAlignment(Qt.AlignCenter)
                 self.history_list.addItem(item)
@@ -689,9 +894,113 @@ class ConfigWindow(QWidget):
         
     def clear_history(self):
         """清空歷史紀錄"""
-        self.history_data = []
+        self.history_sessions[self.curr_session_idx]['data'] = []
+        # user might want to keep the memo, or clear it? 
+        # "備註 (清空時移除)" -> implies clear.
+        # But now "跟隨此紀錄". Let's clear data but keep memo? 
+        # User prompt said "remark is associated with a specific one".
+        # Usually clearing history clears data. Let's clear data only for now unless user asked to clear memo.
+        # Actually previous code cleared memo: self.history_memo.clear()
+        # Let's keep that behavior for the current session.
+        self.history_sessions[self.curr_session_idx]['memo'] = ""
         self.history_memo.clear()
         self.update_history_list()
+
+    def prev_session(self):
+        if self.curr_session_idx > 0:
+            self.curr_session_idx -= 1
+            self.update_history_list()
+            self.save_settings()
+
+    def next_session(self):
+        # Check if current session is last
+        if self.curr_session_idx == len(self.history_sessions) - 1:
+            # Create new session
+            self.history_sessions.append({"data": [], "memo": ""})
+            
+        self.curr_session_idx += 1
+        self.update_history_list()
+        self.save_settings()
+        
+    def save_current_memo(self):
+        self.history_sessions[self.curr_session_idx]['memo'] = self.history_memo.text()
+        pass
+
+    def clear_all_history(self):
+        """清除所有歷史紀錄"""
+        # 使用 WindowModal 避免凍結轉盤視窗
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("確認")
+        msg_box.setText("確定要清除所有紀錄嗎？")
+        msg_box.setIcon(QMessageBox.Question)
+        msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        msg_box.setWindowModality(Qt.WindowModal)
+        
+        if msg_box.exec() == QMessageBox.Yes:
+            self.history_sessions = [{"data": [], "memo": ""}]
+            self.curr_session_idx = 0
+            self.update_history_list()
+            self.save_settings()
+
+    def export_history_csv(self):
+        """匯出所有歷史紀錄為 CSV"""
+        # 使用 WindowModal 檔案對話框
+        dialog = QFileDialog(self, "匯出 CSV", "", "CSV Files (*.csv)")
+        dialog.setAcceptMode(QFileDialog.AcceptSave)
+        dialog.setWindowModality(Qt.WindowModal)
+        
+        if dialog.exec():
+            files = dialog.selectedFiles()
+            if files:
+                file_name = files[0]
+                try:
+                    with open(file_name, 'w', newline='', encoding='utf-8-sig') as csvfile:
+                        writer = csv.writer(csvfile)
+                        
+                        # 準備資料
+                        # Row 1: Session IDs
+                        ids = [f"紀錄 {i+1}" for i in range(len(self.history_sessions))]
+                        writer.writerow(ids)
+                        
+                        # Row 2: Memos
+                        memos = [s.get('memo', '') for s in self.history_sessions]
+                        writer.writerow(memos)
+                        
+                        # Row 3+: Data (Transpose)
+                        # Find max length
+                        max_len = 0
+                        for s in self.history_sessions:
+                            data = s.get('data', [])
+                            if len(data) > max_len:
+                                max_len = len(data)
+                                
+                        for i in range(max_len):
+                            row_data = []
+                            for s in self.history_sessions:
+                                data = s.get('data', [])
+                                # Chronological: Old -> New
+                                rev_data = list(data)
+                                if i < len(rev_data):
+                                    row_data.append(rev_data[i])
+                                else:
+                                    row_data.append("")
+                            writer.writerow(row_data)
+                                    
+                    # 成功提示也需要 WindowModal
+                    msg = QMessageBox(self)
+                    msg.setWindowTitle("成功")
+                    msg.setText("匯出完成！")
+                    msg.setIcon(QMessageBox.Information)
+                    msg.setWindowModality(Qt.WindowModal)
+                    msg.exec()
+                    
+                except Exception as e:
+                    msg = QMessageBox(self)
+                    msg.setWindowTitle("錯誤")
+                    msg.setText(f"匯出失敗: {str(e)}")
+                    msg.setIcon(QMessageBox.Critical)
+                    msg.setWindowModality(Qt.WindowModal)
+                    msg.exec()
 
     def choose_result_color(self):
         """選擇結果文字顏色"""
@@ -699,6 +1008,7 @@ class ConfigWindow(QWidget):
         if color.isValid():
             self.result_text_color = color
             self.update_result_color_btn()
+            self.update_result_bg_color_btn() # Update preview checking
             self.update_wheel_settings()
             
     def update_result_color_btn(self):
@@ -736,7 +1046,12 @@ class ConfigWindow(QWidget):
         """新增或更新選項"""
         name = self.name_input.text().strip()
         if not name:
-            QMessageBox.warning(self, "錯誤", "請輸入選項名稱")
+            msg = QMessageBox(self)
+            msg.setWindowTitle("錯誤")
+            msg.setText("請輸入選項名稱")
+            msg.setIcon(QMessageBox.Warning)
+            msg.setWindowModality(Qt.WindowModal)
+            msg.exec()
             return
             
         weight = self.weight_input.value()
@@ -757,6 +1072,7 @@ class ConfigWindow(QWidget):
         
         self.update_list()
         self.update_wheel()
+        self.auto_save_items() # Call auto_save_items here
         self.save_settings()
         
     def load_item_for_edit(self, list_item):
@@ -792,10 +1108,16 @@ class ConfigWindow(QWidget):
             self.items.pop(row)
             self.update_list()
             self.update_wheel()
+            self.auto_save_items() # Call auto_save_items here
             if row == self.editing_index:
                 self.cancel_edit()
         else:
-            QMessageBox.information(self, "提示", "請先選擇要移除的項目")
+            msg = QMessageBox(self)
+            msg.setWindowTitle("提示")
+            msg.setText("請先選擇要移除的項目")
+            msg.setIcon(QMessageBox.Information)
+            msg.setWindowModality(Qt.WindowModal)
+            msg.exec()
 
     def move_item_up(self):
         """上移選項"""
@@ -805,6 +1127,7 @@ class ConfigWindow(QWidget):
             self.update_list()
             self.item_list.setCurrentRow(row-1)
             self.update_wheel()
+            self.auto_save_items() # Call auto_save_items here
             
     def move_item_down(self):
         """下移選項"""
@@ -814,12 +1137,18 @@ class ConfigWindow(QWidget):
             self.update_list()
             self.item_list.setCurrentRow(row+1)
             self.update_wheel()
+            self.auto_save_items() # Call auto_save_items here
             
     def test_wheel(self):
         """開啟測試轉盤"""
         active_items = [i for i in self.items if i.get('enabled', True)]
         if not active_items:
-            QMessageBox.warning(self, "警告", "請先新增並啟用至少一個選項")
+            msg = QMessageBox(self)
+            msg.setWindowTitle("警告")
+            msg.setText("請先新增並啟用至少一個選項")
+            msg.setIcon(QMessageBox.Warning)
+            msg.setWindowModality(Qt.WindowModal)
+            msg.exec()
             return
             
         self.test_window = WheelWindow(edit_mode=True)
@@ -838,11 +1167,16 @@ class ConfigWindow(QWidget):
     def on_weights_changed_from_wheel(self):
         """從轉盤更新權重時的回調"""
         self.update_list()
+        self.auto_save_items() # Call auto_save_items here
         self.save_settings()
         self.update_wheel()
 
     def update_list(self):
         """更新選項列表"""
+        # 保存捲動位置
+        scroll_bar = self.item_list.verticalScrollBar()
+        current_scroll = scroll_bar.value()
+        
         self.item_list.clear()
         
         active_items = [i for i in self.items if i.get('enabled', True)]
@@ -856,12 +1190,17 @@ class ConfigWindow(QWidget):
             if item.get('enabled', True) and total_weight > 0:
                 prob = (item['weight'] / total_weight) * 100
                 
-            widget = ItemWidget(item['name'], item['weight'], item['color'], prob, item.get('enabled', True))
+            widget = ItemWidget(item['name'], item['weight'], item['color'], prob, item.get('enabled', True), item.get('sound_enable', False))
             widget.toggled.connect(lambda checked, idx=i: self.on_item_toggled(idx, checked))
+            widget.sound_toggled.connect(lambda checked, idx=i: self.on_item_sound_toggled(idx, checked))
+            widget.import_clicked.connect(lambda idx=i: self.on_item_import_clicked(idx))
             
             list_item.setSizeHint(widget.sizeHint())
             list_item.setData(Qt.UserRole, item)
             self.item_list.setItemWidget(list_item, widget)
+            
+        # 恢復捲動位置
+        scroll_bar.setValue(current_scroll)
 
     def on_list_reordered(self, parent, start, end, destination, row):
         """列表重新排序時的回調"""
@@ -875,6 +1214,7 @@ class ConfigWindow(QWidget):
         self.items = new_items
         self.update_list()
         self.update_wheel()
+        self.auto_save_items() # Call auto_save_items here
         self.save_settings()
 
     def on_item_toggled(self, index, checked):
@@ -883,10 +1223,116 @@ class ConfigWindow(QWidget):
             self.items[index]['enabled'] = checked
             self.update_list()
             self.update_wheel()
+            self.auto_save_items()
             self.save_settings()
 
+    def on_item_sound_toggled(self, index, checked):
+        """選項音效啟用/停用切換"""
+        if 0 <= index < len(self.items):
+            self.items[index]['sound_enable'] = checked
+            self.auto_save_items()
+            self.save_settings()
+
+    def on_item_import_clicked(self, index):
+        """選項專屬音效匯入"""
+        if not (0 <= index < len(self.items)):
+            return
+            
+        item = self.items[index]
+        name = item['name']
+        
+        # 簡單清理檔名非法字元
+        safe_name = "".join([c for c in name if c.isalnum() or c in (' ', '_', '-')]).strip()
+        if not safe_name:
+            safe_name = f"item_{index}"
+            
+        dialog = QFileDialog(self, f"匯入音效 ({name})", "", "Audio Files (*.mp3 *.wav)")
+        dialog.setWindowModality(Qt.WindowModal)
+        
+        if dialog.exec():
+            files = dialog.selectedFiles()
+            if not files:
+                return
+            src_path = files[0]
+            
+            # Check size (10MB)
+            if os.path.getsize(src_path) > 10 * 1024 * 1024:
+                msg = QMessageBox(self)
+                msg.setText("檔案大小不能超過 10MB")
+                msg.setIcon(QMessageBox.Warning)
+                msg.setWindowModality(Qt.WindowModal)
+                msg.exec()
+                return
+                
+            try:
+                sound_dir = external_path("SOUND")
+                if not os.path.exists(sound_dir):
+                    os.makedirs(sound_dir)
+                    
+                _, ext = os.path.splitext(src_path)
+                ext = ext.lower()
+                
+                target_filename = f"item_{safe_name}{ext}"
+                target_path = os.path.join(sound_dir, target_filename)
+                
+                # 偵測衝突
+                other_ext = '.wav' if ext == '.mp3' else '.mp3'
+                conflict_path = os.path.join(sound_dir, f"item_{safe_name}{other_ext}")
+                
+                # Release locks if WheelWindow exists (especially if it just played this item sound)
+                if self.wheel_window:
+                    self.wheel_window.release_audio_locks()
+
+                if os.path.exists(conflict_path):
+                    dlg = SoundConflictDialog(self, conflict_path, src_path)
+                    if dlg.exec():
+                        if dlg.selected_action == 'replace_new':
+                            try:
+                                os.remove(conflict_path)
+                            except Exception as e:
+                                print(f"Error removing conflict file: {e}")
+                        elif dlg.selected_action == 'keep_old':
+                            if self.wheel_window: self.wheel_window.load_sounds()
+                            return
+                    else:
+                         if self.wheel_window: self.wheel_window.load_sounds()
+                         return
+
+                # 執行複製 (若有同名同格式會覆蓋)
+                if os.path.exists(target_path):
+                    try:
+                        os.remove(target_path)
+                    except:
+                        pass
+
+                # Copy
+                shutil.copy2(src_path, target_path)
+                
+                # Update item data
+                self.items[index]['sound_enable'] = True
+                self.items[index]['sound_file'] = target_filename
+                
+                # Reload wheel sounds (important to reload global ones we released)
+                if self.wheel_window:
+                    self.wheel_window.load_sounds()
+                self.auto_save_items()
+                self.save_settings()
+                
+                msg = QMessageBox(self)
+                msg.setText(f"已匯入選項音效: {target_filename}")
+                msg.setIcon(QMessageBox.Information)
+                msg.setWindowModality(Qt.WindowModal)
+                msg.exec()
+                
+            except Exception as e:
+                msg = QMessageBox(self)
+                msg.setText(f"匯入失敗: {str(e)}")
+                msg.setIcon(QMessageBox.Critical)
+                msg.setWindowModality(Qt.WindowModal)
+                msg.exec()
+
     def update_result_color_btn(self):
-        self.result_color_btn.setStyleSheet(f"background-color: {self.result_text_color.name()}")
+        self.result_color_btn.setStyleSheet(f"background-color: #e3e3e3; color: {self.result_text_color.name()}; font-weight: bold;")
 
     def choose_result_bg_color(self):
         color = QColorDialog.getColor(self.result_bg_color, self, "選擇結果背景顏色")
@@ -896,44 +1342,72 @@ class ConfigWindow(QWidget):
             self.save_settings()
 
     def update_result_bg_color_btn(self):
-        self.result_bg_color_btn.setStyleSheet(f"background-color: {self.result_bg_color.name()}; color: {self.result_text_color.name()}")
+        self.result_bg_color_btn.setStyleSheet(f"background-color: {self.result_bg_color.name()}; color: {self.result_text_color.name()}; font-weight: bold;")
 
     def save_items(self):
         """儲存選項至檔案"""
         if not self.items:
-            QMessageBox.information(self, "提示", "沒有項目可儲存")
+            msg = QMessageBox(self)
+            msg.setWindowTitle("提示")
+            msg.setText("沒有項目可儲存")
+            msg.setIcon(QMessageBox.Information)
+            msg.setWindowModality(Qt.WindowModal)
+            msg.exec()
             return
-        file_name, _ = QFileDialog.getSaveFileName(self, "儲存設定", "", "Json Files (*.json)")
-        if file_name:
-            self.do_save(file_name)
+
+        # 使用 WindowModal 檔案對話框
+        dialog = QFileDialog(self, "儲存設定", "", "Json Files (*.json)")
+        dialog.setAcceptMode(QFileDialog.AcceptSave)
+        dialog.setWindowModality(Qt.WindowModal)
+        
+        if dialog.exec():
+            files = dialog.selectedFiles()
+            if files:
+                self.do_save(files[0])
 
     def do_save(self, file_name):
         """執行儲存"""
+        self.current_file_path = file_name
+        self.auto_save_items()
+        self.save_settings(last_file=file_name)
+        QMessageBox.information(self, "成功", "設定已儲存")
+
+    def auto_save_items(self):
+        """自動儲存選項至當前檔案"""
+        if not self.current_file_path:
+            return
+            
         data = []
         for item in self.items:
             data.append({
                 'name': item['name'],
                 'weight': item['weight'],
                 'color': item['color'].name(),
-                'enabled': item.get('enabled', True)
+                'enabled': item.get('enabled', True),
+                'sound_enable': item.get('sound_enable', False),
+                'sound_file': item.get('sound_file', "")
             })
         try:
-            with open(file_name, 'w', encoding='utf-8') as f:
+            with open(self.current_file_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=4)
-            self.save_settings(last_file=file_name)
-            QMessageBox.information(self, "成功", "設定已儲存")
-        except Exception as e:
-            QMessageBox.critical(self, "錯誤", f"儲存失敗: {str(e)}")
+        except:
+            pass # Silent fail for auto-save
 
     def load_items_dialog(self):
         """載入選項對話框"""
-        file_name, _ = QFileDialog.getOpenFileName(self, "載入設定", "", "Json Files (*.json)")
-        if file_name:
-            self.do_load(file_name)
+        # 使用 WindowModal 檔案對話框
+        dialog = QFileDialog(self, "載入設定", "", "Json Files (*.json)")
+        dialog.setWindowModality(Qt.WindowModal)
+        
+        if dialog.exec():
+            files = dialog.selectedFiles()
+            if files:
+                self.do_load(files[0])
 
     def do_load(self, file_name):
         """執行載入"""
         try:
+            self.current_file_path = file_name
             with open(file_name, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
@@ -946,7 +1420,9 @@ class ConfigWindow(QWidget):
                     'name': item_data['name'],
                     'weight': weight_val,
                     'color': QColor(item_data['color']),
-                    'enabled': item_data.get('enabled', True)
+                    'enabled': item_data.get('enabled', True),
+                    'sound_enable': item_data.get('sound_enable', False),
+                    'sound_file': item_data.get('sound_file', "")
                 })
             
             self.update_list()
@@ -954,7 +1430,12 @@ class ConfigWindow(QWidget):
             self.save_settings(last_file=file_name)
             QMessageBox.information(self, "成功", "設定已載入")
         except Exception as e:
-            QMessageBox.critical(self, "錯誤", f"載入失敗: {str(e)}")
+            msg = QMessageBox(self)
+            msg.setWindowTitle("錯誤")
+            msg.setText(f"載入失敗: {str(e)}")
+            msg.setIcon(QMessageBox.Critical)
+            msg.setWindowModality(Qt.WindowModal)
+            msg.exec()
 
     def save_settings(self, last_file=None):
         """儲存設定"""
@@ -968,7 +1449,8 @@ class ConfigWindow(QWidget):
             "continuous_sound_enabled": self.continuous_sound_check.isChecked(),
             "finish_sound_enabled": self.finish_sound_check.isChecked(),
             "result_opacity": int(self.opacity_slider.value() * 2.55),
-            "always_on_top": self.always_on_top,
+            "always_on_top": self.always_on_top, # Legacy
+            "window_mode": self.window_mode, # New
             
             "wheel_mode": self.wheel_mode,
             "pointer_image_path": self.pointer_image_path,
@@ -983,7 +1465,9 @@ class ConfigWindow(QWidget):
             "show_pointer_line": self.show_pointer_line,
             "panel_expanded": self.panel_expanded,
             "input_panel_expanded": self.input_group.toggle_btn.isChecked() if hasattr(self, 'input_group') else True,
-            "style_panel_expanded": self.style_group.toggle_btn.isChecked() if hasattr(self, 'style_group') else True
+            "style_panel_expanded": self.style_group.toggle_btn.isChecked() if hasattr(self, 'style_group') else True,
+            "history_sessions": self.history_sessions,
+            "curr_session_idx": self.curr_session_idx
         }
         if last_file:
             settings["last_file"] = last_file
@@ -1045,7 +1529,23 @@ class ConfigWindow(QWidget):
 
                 if "always_on_top" in settings:
                     self.always_on_top = settings["always_on_top"]
-                    # NO CHECKBOX UPDATE HERE
+                    # If legacy setting is true, default to 'top', otherwise 'normal' if mode not found
+                    if self.always_on_top:
+                         self.window_mode = 'top'
+                    else:
+                         self.window_mode = 'normal'
+                         
+                if "window_mode" in settings:
+                    self.window_mode = settings["window_mode"]
+                
+                # Update combo box
+                mode_map = {'top': 0, 'normal': 1}
+                # Handle legacy 'tool' value -> map to 'normal'
+                if self.window_mode == 'tool':
+                    self.window_mode = 'normal'
+                
+                if self.window_mode in mode_map:
+                    self.window_mode_combo.setCurrentIndex(mode_map[self.window_mode])
                 
                 # Restore panel expansion state
                 if "panel_expanded" in settings:
@@ -1059,17 +1559,52 @@ class ConfigWindow(QWidget):
                 if "style_panel_expanded" in settings and hasattr(self, 'style_group'):
                     self.style_group.toggle_btn.setChecked(settings["style_panel_expanded"])
 
+                if "history_sessions" in settings:
+                    self.history_sessions = settings["history_sessions"]
+                if "curr_session_idx" in settings:
+                    self.curr_session_idx = settings["curr_session_idx"]
+                    # Boundary check
+                    if self.curr_session_idx >= len(self.history_sessions):
+                        self.curr_session_idx = 0
+
                 # 載入新設定
                 # 載入新設定
                 self.wheel_mode = settings.get('wheel_mode', 'classic')
-                self.pointer_image_path = settings.get('pointer_image_path', resource_path("PIC/ee.png"))
-                self.pointer_angle_offset = settings.get('pointer_angle_offset', 0)
+                self.pointer_image_path = settings.get('pointer_image_path', "")
+                
+                # Check if image exists, if not fallback to default
+                if not self.pointer_image_path or not os.path.exists(self.pointer_image_path):
+                     default_path = resource_path(os.path.join("PIC", "ee.png"))
+                     if os.path.exists(default_path):
+                         self.pointer_image_path = default_path
+                         self.pointer_angle_offset = 335 # Default for ee.png
+                     else:
+                         self.pointer_image_path = ""
+                         self.pointer_angle_offset = settings.get('pointer_angle_offset', 0)
+                else:
+                    self.pointer_angle_offset = settings.get('pointer_angle_offset', 0)
+
                 self.pointer_scale = settings.get('pointer_scale', 1.0)
                 self.spin_speed_multiplier = settings.get('spin_speed_multiplier', 1.0)
                 
                 self.classic_pointer_angle = settings.get('classic_pointer_angle', 0)
                 self.center_text = settings.get('center_text', "GO")
                 self.show_pointer_line = settings.get('show_pointer_line', True)
+
+                # Update UI Mode State
+                if self.wheel_mode == 'classic':
+                    self.mode_classic_radio.setChecked(True)
+                    self.image_mode_container.setVisible(False)
+                    self.classic_mode_container.setVisible(True)
+                else:
+                    self.mode_image_radio.setChecked(True)
+                    self.image_mode_container.setVisible(True)
+                    self.classic_mode_container.setVisible(False)
+
+                if self.pointer_image_path:
+                    self.image_path_label.setText(os.path.basename(self.pointer_image_path))
+                else:
+                    self.image_path_label.setText("未選擇圖片")
                 
                 self.update_pointer_line_btn_state()
                 
@@ -1108,6 +1643,7 @@ class ConfigWindow(QWidget):
                         self.calibrate_btn.setEnabled(True)
                     
                 if "last_file" in settings and isinstance(settings["last_file"], str) and os.path.exists(settings["last_file"]):
+                    self.current_file_path = settings["last_file"]
                     with open(settings["last_file"], 'r', encoding='utf-8') as f:
                         data = json.load(f)
                     self.items = []
@@ -1116,7 +1652,9 @@ class ConfigWindow(QWidget):
                             'name': item_data['name'],
                             'weight': float(item_data['weight']),
                             'color': QColor(item_data['color']),
-                            'enabled': item_data.get('enabled', True)
+                            'enabled': item_data.get('enabled', True),
+                            'sound_enable': item_data.get('sound_enable', False),
+                            'sound_file': item_data.get('sound_file', "")
                         })
                     self.update_list()
             except Exception as e:
@@ -1129,7 +1667,12 @@ class ConfigWindow(QWidget):
         if self.wheel_window is None:
             active_items = [i for i in self.items if i.get('enabled', True)]
             if not active_items:
-                QMessageBox.warning(self, "警告", "請先新增並啟用至少一個選項")
+                msg = QMessageBox(self)
+                msg.setWindowTitle("警告")
+                msg.setText("請先新增並啟用至少一個選項")
+                msg.setIcon(QMessageBox.Warning)
+                msg.setWindowModality(Qt.WindowModal)
+                msg.exec()
                 return
             self.wheel_window = WheelWindow()
             self.update_wheel()
@@ -1174,13 +1717,18 @@ class ConfigWindow(QWidget):
         self.update_wheel_settings()
 
     def select_pointer_image(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "選擇指針圖片", "", "Images (*.png *.jpg *.jpeg *.bmp)")
-        if file_path:
-            self.pointer_image_path = file_path
-            self.image_path_label.setText(os.path.basename(file_path))
-            self.calibrate_btn.setEnabled(True)
-            self.update_wheel_settings()
-            self.save_settings()
+        dialog = QFileDialog(self, "選擇指針圖片", "", "Images (*.png *.jpg *.jpeg *.bmp)")
+        dialog.setWindowModality(Qt.WindowModal)
+        
+        if dialog.exec():
+            files = dialog.selectedFiles()
+            if files:
+                file_path = files[0]
+                self.pointer_image_path = file_path
+                self.image_path_label.setText(os.path.basename(file_path))
+                self.calibrate_btn.setEnabled(True)
+                self.update_wheel_settings()
+                self.save_settings()
 
     def open_calibration_dialog(self):
         """開啟圖片修正視窗"""
@@ -1190,6 +1738,7 @@ class ConfigWindow(QWidget):
             active_items = [{'name': '測試', 'weight': 1, 'color': QColor('blue'), 'enabled': True}]
 
         dialog = ImageCalibrationDialog(self, active_items, self.pointer_image_path, self.pointer_angle_offset, self.pointer_scale)
+        dialog.setWindowModality(Qt.WindowModal)
         if dialog.exec():
             self.pointer_angle_offset, self.pointer_scale = dialog.get_result()
             self.update_wheel_settings()
@@ -1240,10 +1789,143 @@ class ConfigWindow(QWidget):
                 self.pointer_scale
             )
             
-            # 設定置頂
-            self.wheel_window.set_always_on_top(True)
+            # 設定置頂/工具
+            self.wheel_window.set_window_mode(self.window_mode)
+            
+            # 同步速度 (僅在未旋轉時更新，避免影響目前物理運算，雖物理運算其實已鎖定初速)
+            if not self.wheel_window.is_spinning:
+                self.wheel_window.spin_speed_multiplier = self.spin_speed_multiplier
 
 
+    def on_window_mode_changed(self, index):
+        """視窗模式變更時的回調"""
+        modes = ['top', 'normal']
+        if 0 <= index < len(modes):
+            self.window_mode = modes[index]
+            self.update_wheel_settings()
+
+
+    def import_custom_sound(self):
+        """匯入自訂音效"""
+        dialog = QFileDialog(self, "匯入音效", "", "Audio Files (*.mp3 *.wav)")
+        dialog.setWindowModality(Qt.WindowModal)
+        
+        if dialog.exec():
+            files = dialog.selectedFiles()
+            if not files:
+                return
+            
+            src_path = files[0]
+            
+            # 檢查檔案大小 (10MB)
+            if os.path.getsize(src_path) > 10 * 1024 * 1024:
+                msg = QMessageBox(self)
+                msg.setWindowTitle("錯誤")
+                msg.setText("檔案大小不能超過 10MB")
+                msg.setIcon(QMessageBox.Warning)
+                msg.setWindowModality(Qt.WindowModal)
+                msg.exec()
+                return
+
+            # 選擇音效類型
+            items = ["旋轉音效 (Tick)", "持續音效 (Loop)", "結束音效 (Finish)"]
+            
+            input_dialog = QInputDialog(self)
+            input_dialog.setWindowModality(Qt.WindowModal)
+            input_dialog.setWindowTitle("選擇音效類型")
+            input_dialog.setLabelText("請選擇要設定的音效:")
+            input_dialog.setComboBoxItems(items)
+            input_dialog.setComboBoxEditable(False)
+            
+            ok = False
+            item = ""
+            if input_dialog.exec() == QInputDialog.Accepted:
+                 item = input_dialog.textValue()
+                 ok = True
+            
+            role = ""
+            if ok and item:
+                if "Tick" in item:
+                    role = "tick"
+                elif "Loop" in item:
+                    role = "loop"
+                elif "Finish" in item:
+                    role = "finish"
+            else:
+                return # User cancelled
+
+            # 儲存檔案
+            try:
+                sound_dir = external_path("SOUND")
+                if not os.path.exists(sound_dir):
+                    os.makedirs(sound_dir)
+                
+                # 取得副檔名
+                _, ext = os.path.splitext(src_path)
+                ext = ext.lower()
+                
+                target_filename = f"{role}{ext}"
+                target_path = os.path.join(sound_dir, target_filename)
+                
+                # 偵測衝突
+                other_ext = '.wav' if ext == '.mp3' else '.mp3'
+                conflict_path = os.path.join(sound_dir, f"{role}{other_ext}")
+                
+                # Release locks if WheelWindow exists
+                if self.wheel_window:
+                    self.wheel_window.release_audio_locks()
+
+                if os.path.exists(conflict_path):
+                    # 發現不同格式的同名檔案，詢問使用者
+                    dlg = SoundConflictDialog(self, conflict_path, src_path)
+                    if dlg.exec():
+                        if dlg.selected_action == 'replace_new':
+                            # 使用新檔 -> 刪除舊檔 (衝突檔)
+                            try:
+                                os.remove(conflict_path)
+                            except Exception as e:
+                                print(f"Error removing conflict file: {e}")
+                            # 繼續執行複製 (覆蓋同名同格式若是有的話)
+                        elif dlg.selected_action == 'keep_old':
+                            # 保留舊檔 -> 不執行複製
+                            # Reload sounds since we released them
+                            if self.wheel_window:
+                                self.wheel_window.load_sounds()
+                            return
+                    else:
+                        # 取消
+                        # Reload sounds since we released them
+                        if self.wheel_window:
+                            self.wheel_window.load_sounds()
+                        return
+                
+                # 執行複製 (若有同名同格式會覆蓋)
+                if os.path.exists(target_path):
+                    try:
+                        os.remove(target_path)
+                    except:
+                        pass
+                shutil.copy2(src_path, target_path)
+                
+                # 更新轉盤
+                if self.wheel_window:
+                    self.wheel_window.load_sounds()
+                
+                msg = QMessageBox(self)
+                msg.setWindowTitle("成功")
+                msg.setText(f"已匯入為 {item}")
+                msg.setIcon(QMessageBox.Information)
+                msg.setWindowModality(Qt.WindowModal)
+                msg.exec()
+                
+            except Exception as e:
+                msg = QMessageBox(self)
+                msg.setWindowTitle("錯誤")
+                msg.setText(f"匯入失敗: {str(e)}")
+                msg.setIcon(QMessageBox.Critical)
+                msg.setWindowModality(Qt.WindowModal)
+                msg.exec()
+        
     def on_opacity_changed(self):
         val = self.opacity_slider.value()
         self.result_opacity = int(val * 2.55)
@@ -1287,6 +1969,24 @@ class ConfigWindow(QWidget):
 
     def closeEvent(self, event):
         """視窗關閉事件"""
+        # 自動儲存至 autosave.json
+        try:
+            autosave_path = external_path("autosave.json")
+            data = []
+            for item in self.items:
+                data.append({
+                    'name': item['name'],
+                    'weight': item['weight'],
+                    'color': item['color'].name(),
+                    'enabled': item.get('enabled', True),
+                    'sound_enable': item.get('sound_enable', False),
+                    'sound_file': item.get('sound_file', "")
+                })
+            with open(autosave_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=4)
+        except:
+            pass
+
         self.save_settings()
         if self.wheel_window:
             self.wheel_window.close()

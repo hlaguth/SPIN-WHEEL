@@ -5,8 +5,10 @@ __pycache__/
 # PyInstaller build output
 build/
 dist/
+PIC/
+SOUND/
 *.spec
-
+.agent/
 # Binary files
 *.exe
 *.rar
@@ -14,5 +16,6 @@ dist/
 *.wav
 *.png
 *.json
+*.mp3
 # Logs
 *.log
