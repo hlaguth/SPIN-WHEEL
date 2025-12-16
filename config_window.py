@@ -18,7 +18,7 @@ from calibration_dialog import ImageCalibrationDialog
 import csv
 import shutil
 
-SETTINGS_FILE = resource_path("settings.json")
+SETTINGS_FILE = external_path("settings.json")
 
 
 class SoundConflictDialog(QDialog):
@@ -155,7 +155,7 @@ class ItemWidget(QWidget):
     sound_toggled = Signal(bool)
     import_clicked = Signal()
     
-    def __init__(self, name, weight, color, prob, enabled, sound_enabled):
+    def __init__(self, name, weight, color, prob, enabled, sound_enabled, sound_file=""):
         super().__init__()
         layout = QHBoxLayout()
         layout.setContentsMargins(10, 8, 10, 8)
@@ -185,20 +185,40 @@ class ItemWidget(QWidget):
         layout.addWidget(self.sound_check)
         
         self.import_btn = QPushButton("匯入音效")
-        self.import_btn.setFixedSize(70, 25)
-        self.import_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #2196F3;
-                color: white;
-                border: none;
-                border-radius: 3px;
-                font-size: 12px;
-                padding: 0px;
-            }
-            QPushButton:hover {
-                background-color: #1976D2;
-            }
-        """)
+        
+        if sound_file:
+            self.import_btn.setText(f"♪ {sound_file}")
+            self.import_btn.setToolTip(f"目前音效: {sound_file}")
+            self.import_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #4CAF50;
+                    color: white;
+                    border: none;
+                    border-radius: 3px;
+                    font-size: 12px;
+                    padding: 0px;
+                }
+                QPushButton:hover {
+                    background-color: #45a049;
+                }
+            """)
+            self.import_btn.setFixedWidth(120) # Widen for text
+        else:
+            self.import_btn.setFixedSize(70, 25)
+            self.import_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #2196F3;
+                    color: white;
+                    border: none;
+                    border-radius: 3px;
+                    font-size: 12px;
+                    padding: 0px;
+                }
+                QPushButton:hover {
+                    background-color: #1976D2;
+                }
+            """)
+            
         self.import_btn.clicked.connect(self.import_clicked.emit)
         layout.addWidget(self.import_btn)
         
@@ -1190,7 +1210,7 @@ class ConfigWindow(QWidget):
             if item.get('enabled', True) and total_weight > 0:
                 prob = (item['weight'] / total_weight) * 100
                 
-            widget = ItemWidget(item['name'], item['weight'], item['color'], prob, item.get('enabled', True), item.get('sound_enable', False))
+            widget = ItemWidget(item['name'], item['weight'], item['color'], prob, item.get('enabled', True), item.get('sound_enable', False), item.get('sound_file', ""))
             widget.toggled.connect(lambda checked, idx=i: self.on_item_toggled(idx, checked))
             widget.sound_toggled.connect(lambda checked, idx=i: self.on_item_sound_toggled(idx, checked))
             widget.import_clicked.connect(lambda idx=i: self.on_item_import_clicked(idx))
@@ -1241,11 +1261,6 @@ class ConfigWindow(QWidget):
         item = self.items[index]
         name = item['name']
         
-        # 簡單清理檔名非法字元
-        safe_name = "".join([c for c in name if c.isalnum() or c in (' ', '_', '-')]).strip()
-        if not safe_name:
-            safe_name = f"item_{index}"
-            
         dialog = QFileDialog(self, f"匯入音效 ({name})", "", "Audio Files (*.mp3 *.wav)")
         dialog.setWindowModality(Qt.WindowModal)
         
@@ -1269,50 +1284,32 @@ class ConfigWindow(QWidget):
                 if not os.path.exists(sound_dir):
                     os.makedirs(sound_dir)
                     
-                _, ext = os.path.splitext(src_path)
-                ext = ext.lower()
-                
-                target_filename = f"item_{safe_name}{ext}"
+                target_filename = os.path.basename(src_path)
                 target_path = os.path.join(sound_dir, target_filename)
                 
-                # 偵測衝突
-                other_ext = '.wav' if ext == '.mp3' else '.mp3'
-                conflict_path = os.path.join(sound_dir, f"item_{safe_name}{other_ext}")
-                
-                # Release locks if WheelWindow exists (especially if it just played this item sound)
+                # Release locks if WheelWindow exists
                 if self.wheel_window:
                     self.wheel_window.release_audio_locks()
 
-                if os.path.exists(conflict_path):
-                    dlg = SoundConflictDialog(self, conflict_path, src_path)
-                    if dlg.exec():
-                        if dlg.selected_action == 'replace_new':
-                            try:
-                                os.remove(conflict_path)
-                            except Exception as e:
-                                print(f"Error removing conflict file: {e}")
-                        elif dlg.selected_action == 'keep_old':
-                            if self.wheel_window: self.wheel_window.load_sounds()
-                            return
-                    else:
-                         if self.wheel_window: self.wheel_window.load_sounds()
-                         return
-
-                # 執行複製 (若有同名同格式會覆蓋)
+                # Execute Copy (Standard copy will overwrite if exists)
                 if os.path.exists(target_path):
-                    try:
-                        os.remove(target_path)
-                    except:
-                        pass
-
-                # Copy
-                shutil.copy2(src_path, target_path)
+                     # If it's the exact same file (same path), do nothing
+                     if os.path.abspath(target_path) == os.path.abspath(src_path):
+                         pass
+                     else:
+                         try:
+                             os.remove(target_path)
+                         except:
+                             pass
+                         shutil.copy2(src_path, target_path)
+                else:
+                     shutil.copy2(src_path, target_path)
                 
                 # Update item data
                 self.items[index]['sound_enable'] = True
                 self.items[index]['sound_file'] = target_filename
                 
-                # Reload wheel sounds (important to reload global ones we released)
+                # Reload wheel sounds
                 if self.wheel_window:
                     self.wheel_window.load_sounds()
                 self.auto_save_items()
@@ -1374,8 +1371,9 @@ class ConfigWindow(QWidget):
 
     def auto_save_items(self):
         """自動儲存選項至當前檔案"""
-        if not self.current_file_path:
-            return
+        target_file = self.current_file_path
+        if not target_file:
+            target_file = external_path("autosave.json")
             
         data = []
         for item in self.items:
@@ -1388,7 +1386,7 @@ class ConfigWindow(QWidget):
                 'sound_file': item.get('sound_file', "")
             })
         try:
-            with open(self.current_file_path, 'w', encoding='utf-8') as f:
+            with open(target_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=4)
         except:
             pass # Silent fail for auto-save
@@ -1673,6 +1671,27 @@ class ConfigWindow(QWidget):
                 import traceback
                 traceback.print_exc()
                 QMessageBox.critical(self, "錯誤", f"載入失敗: {str(e)}")
+        else:
+             # Try loading autosave.json if no settings/last_file found
+             autosave_path = external_path("autosave.json")
+             if os.path.exists(autosave_path):
+                 print(f"DEBUG: Auto-loading {autosave_path}")
+                 try:
+                    with open(autosave_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    self.items = []
+                    for item_data in data:
+                        self.items.append({
+                            'name': item_data['name'],
+                            'weight': float(item_data['weight']),
+                            'color': QColor(item_data['color']),
+                            'enabled': item_data.get('enabled', True),
+                            'sound_enable': item_data.get('sound_enable', False),
+                            'sound_file': item_data.get('sound_file', "")
+                        })
+                    self.update_list()
+                 except:
+                     pass
 
     def toggle_wheel(self):
         """切換轉盤視窗"""
