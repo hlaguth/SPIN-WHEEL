@@ -1414,13 +1414,20 @@ class ConfigWindow(QWidget):
                 val = item_data['weight']
                 weight_val = float(val)
                 
+                # 驗證音效路徑是否存在
+                sound_file = item_data.get('sound_file', "")
+                sound_enable = item_data.get('sound_enable', False)
+                if sound_file and not os.path.exists(sound_file):
+                    sound_file = ""  # 路徑不存在，重置為預設
+                    sound_enable = False
+                
                 self.items.append({
                     'name': item_data['name'],
                     'weight': weight_val,
                     'color': QColor(item_data['color']),
                     'enabled': item_data.get('enabled', True),
-                    'sound_enable': item_data.get('sound_enable', False),
-                    'sound_file': item_data.get('sound_file', "")
+                    'sound_enable': sound_enable,
+                    'sound_file': sound_file
                 })
             
             self.update_list()
@@ -1653,13 +1660,20 @@ class ConfigWindow(QWidget):
                             data = json.load(f)
                         self.items = []
                         for item_data in data:
+                            # 驗證音效路徑是否存在
+                            sound_file = item_data.get('sound_file', "")
+                            sound_enable = item_data.get('sound_enable', False)
+                            if sound_file and not os.path.exists(sound_file):
+                                sound_file = ""
+                                sound_enable = False
+                            
                             self.items.append({
                                 'name': item_data['name'],
                                 'weight': float(item_data['weight']),
                                 'color': QColor(item_data['color']),
                                 'enabled': item_data.get('enabled', True),
-                                'sound_enable': item_data.get('sound_enable', False),
-                                'sound_file': item_data.get('sound_file', "")
+                                'sound_enable': sound_enable,
+                                'sound_file': sound_file
                             })
                         self.update_list()
                         items_loaded = True
@@ -1680,13 +1694,20 @@ class ConfigWindow(QWidget):
                         data = json.load(f)
                     self.items = []
                     for item_data in data:
+                        # 驗證音效路徑是否存在
+                        sound_file = item_data.get('sound_file', "")
+                        sound_enable = item_data.get('sound_enable', False)
+                        if sound_file and not os.path.exists(sound_file):
+                            sound_file = ""
+                            sound_enable = False
+                        
                         self.items.append({
                             'name': item_data['name'],
                             'weight': float(item_data['weight']),
                             'color': QColor(item_data['color']),
                             'enabled': item_data.get('enabled', True),
-                            'sound_enable': item_data.get('sound_enable', False),
-                            'sound_file': item_data.get('sound_file', "")
+                            'sound_enable': sound_enable,
+                            'sound_file': sound_file
                         })
                     self.update_list()
                  except:
