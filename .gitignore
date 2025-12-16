@@ -14,7 +14,7 @@ SOUND/
 *.rar
 *.zip
 *.wav
-
+.venv
 *.json
 *.mp3
 # Logs
