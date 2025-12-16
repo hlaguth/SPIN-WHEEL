@@ -713,8 +713,15 @@ class WheelWindow(QWidget):
                 painter.save()
                 painter.translate(center)
                 painter.rotate(-logic_angle)
+                
+                # 黑色外框 (輔助線)
+                painter.setPen(QPen(Qt.black, 7)) 
+                painter.drawLine(0, 0, radius, 0)
+                
+                # 綠色本體
                 painter.setPen(QPen(Qt.green, 5)) 
                 painter.drawLine(0, 0, radius, 0)
+                
                 painter.restore()
 
         if self.edit_mode and len(self.items) > 1:
