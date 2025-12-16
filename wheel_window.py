@@ -198,33 +198,39 @@ class WheelWindow(QWidget):
 
 
     def load_sounds(self):
-        """載入音效資源 (支援 mp3/wav)"""
-        # Tick Sound
+        """載入音效資源 (支援 mp3/wav 混合模式)"""
+        # Tick Sound (WAV 使用 QSoundEffect, MP3 使用 QMediaPlayer)
         tick_path = self.find_audio_file("tick")
         self.using_mp3_tick = False
+        
         if tick_path:
             if tick_path.lower().endswith(".mp3"):
                 self.using_mp3_tick = True
                 self.tick_player.setSource(QUrl.fromLocalFile(tick_path))
                 self.tick_audio.setVolume(1.0)
-                # Ensure QSoundEffect is empty
                 self.tick_effect.setSource(QUrl()) 
             else:
+                self.using_mp3_tick = False
                 self.tick_effect.setSource(QUrl.fromLocalFile(tick_path))
-                self.tick_effect.setVolume(1.0) # 0.0 - 1.0
-                # Ensure QMediaPlayer is empty
+                self.tick_effect.setLoopCount(1)
+                self.tick_effect.setVolume(1.0) 
                 self.tick_player.setSource(QUrl())
+        else:
+            self.tick_player.setSource(QUrl())
 
-        # Finish Sound
+        # Finish Sound (同樣混合模式)
         finish_path = self.find_audio_file("finish")
         self.default_finish_path = finish_path
         if finish_path:
+            # 由於 Finish 比較不頻繁，QMediaPlayer 相對安全，但為了短音效穩定，這裡也可以考慮 QSoundEffect
+            # 但考慮 finish 可能比較長，暫時維持 QMediaPlayer，若使用者有問題再改
             self.finish_player.setSource(QUrl.fromLocalFile(finish_path))
             self.finish_audio.setVolume(1.0)
             
         # Connect Error Signals (Add logging)
         self.finish_player.errorOccurred.connect(lambda error, msg=self.finish_player.errorString(): self.on_audio_error("FinishPlayer", error, msg))
         self.loop_player.errorOccurred.connect(lambda error, msg=self.loop_player.errorString(): self.on_audio_error("LoopPlayer", error, msg))
+        self.tick_player.errorOccurred.connect(lambda error, msg=self.tick_player.errorString(): self.on_audio_error("TickPlayer", error, msg))
 
         # Loop Sound
         loop_path = self.find_audio_file("loop")
@@ -362,16 +368,18 @@ class WheelWindow(QWidget):
         """播放滴答音效"""
         if self.sound_enabled:
              if self.using_mp3_tick:
+                 # MP3 Mode (QMediaPlayer)
                  if self.tick_player.source().isValid():
                      if self.tick_player.playbackState() == QMediaPlayer.PlayingState:
                          self.tick_player.stop()
                      self.tick_player.play()
              else:
+                 # WAV Mode (QSoundEffect)
                  if self.tick_effect.source().isValid():
-                     # QSoundEffect 適合短促音效
+                     # 確保停止再播放，避免狀態未重置
+                     if self.tick_effect.isPlaying():
+                         self.tick_effect.stop()
                      self.tick_effect.play()
-                 else:
-                     pass
 
     def play_finish_sound(self, custom_path=None):
         """播放結束音效 (支援自訂路徑)"""

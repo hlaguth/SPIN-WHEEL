@@ -38,21 +38,14 @@ class SoundConflictDialog(QDialog):
         # Comparison Layout
         comp_layout = QHBoxLayout()
         
-        # Left: Existing/Keep (The one that was already there or alternate format)
-        # Actually logic is: File A (Old/Existing?) vs File B (New/Importing?)
-        # Let's call them "既有檔案" vs "新匯入檔案"
-        # Since we are detecting conflict, usually we have one on disk and one currently being imported (temp source).
-        # Or if both are on disk (renaming case)?
-        # Implementation: We passed in paths.
+        self.file_keep = file_keep 
+        self.file_new = file_new  
         
-        self.file_keep = file_keep # The one that might be deleted if we choose new
-        self.file_new = file_new   # The one providing replacement
-        
+        # Revert to QMediaPlayer
         self.player = QMediaPlayer()
         self.audio_output = QAudioOutput()
         self.player.setAudioOutput(self.audio_output)
         self.audio_output.setVolume(1.0)
-        self.player.errorOccurred.connect(lambda error, msg=self.player.errorString(): print(f"Preview Error: {error} - {msg}"))
         
         # --- File A (Existing/Conflict) ---
         group_a = QGroupBox(f"保留: {os.path.basename(file_keep)}")
@@ -90,13 +83,13 @@ class SoundConflictDialog(QDialog):
     def choose_keep(self):
         self.player.stop()
         self.player.setSource(QUrl())
-        self.selected_action = 'keep_old' # Keep the conflicting one (reject new)
+        self.selected_action = 'keep_old' 
         self.accept()
         
     def choose_new(self):
         self.player.stop()
         self.player.setSource(QUrl())
-        self.selected_action = 'replace_new' # Use the new one (delete conflicting)
+        self.selected_action = 'replace_new' 
         self.accept()
         
     def closeEvent(self, event):

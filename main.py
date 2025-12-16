@@ -10,3 +10,4 @@ def main():
 #442
 if __name__ == "__main__":
     main()
+#pyinstaller --noconfirm --onedir --windowed --name "WHEE" --add-data "PIC;PIC" main.py
