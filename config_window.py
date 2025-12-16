@@ -1449,6 +1449,9 @@ class ConfigWindow(QWidget):
 
     def save_settings(self, last_file=None):
         """儲存設定"""
+        if last_file is None:
+            last_file = self.current_file_path
+
         settings = {
             "result_text_color": self.result_text_color.name(),
             "result_bg_color": self.result_bg_color.name(),
@@ -1459,8 +1462,8 @@ class ConfigWindow(QWidget):
             "continuous_sound_enabled": self.continuous_sound_check.isChecked(),
             "finish_sound_enabled": self.finish_sound_check.isChecked(),
             "result_opacity": int(self.opacity_slider.value() * 2.55),
-            "always_on_top": self.always_on_top, # Legacy
-            "window_mode": self.window_mode, # New
+            "always_on_top": self.always_on_top,
+            "window_mode": self.window_mode,
             
             "wheel_mode": self.wheel_mode,
             "pointer_image_path": self.pointer_image_path,
@@ -1468,10 +1471,7 @@ class ConfigWindow(QWidget):
             "pointer_scale": self.pointer_scale,
             "spin_speed_multiplier": self.spin_speed_multiplier,
             "classic_pointer_angle": self.classic_pointer_angle,
-            "classic_pointer_angle": self.classic_pointer_angle,
             "center_text": self.center_text,
-            "show_pointer_line": self.show_pointer_line,
-            "panel_expanded": self.panel_expanded,
             "show_pointer_line": self.show_pointer_line,
             "panel_expanded": self.panel_expanded,
             "input_panel_expanded": self.input_group.toggle_btn.isChecked() if hasattr(self, 'input_group') else True,
@@ -1479,17 +1479,10 @@ class ConfigWindow(QWidget):
             "history_sessions": self.history_sessions,
             "curr_session_idx": self.curr_session_idx
         }
+        
         if last_file:
             settings["last_file"] = last_file
-        elif os.path.exists(SETTINGS_FILE):
-            try:
-                with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
-                    old_settings = json.load(f)
-                    if "last_file" in old_settings:
-                        settings["last_file"] = old_settings["last_file"]
-            except:
-                pass
-                  
+
         try:
             with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
                 json.dump(settings, f, ensure_ascii=False, indent=4)
@@ -1499,6 +1492,7 @@ class ConfigWindow(QWidget):
     def load_last_settings(self):
         """載入上次的設定"""
         print(f"DEBUG: Loading settings... File: {__file__}")
+        items_loaded = False
         if os.path.exists(SETTINGS_FILE):
             try:
                 with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
@@ -1654,25 +1648,30 @@ class ConfigWindow(QWidget):
                     
                 if "last_file" in settings and isinstance(settings["last_file"], str) and os.path.exists(settings["last_file"]):
                     self.current_file_path = settings["last_file"]
-                    with open(settings["last_file"], 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-                    self.items = []
-                    for item_data in data:
-                        self.items.append({
-                            'name': item_data['name'],
-                            'weight': float(item_data['weight']),
-                            'color': QColor(item_data['color']),
-                            'enabled': item_data.get('enabled', True),
-                            'sound_enable': item_data.get('sound_enable', False),
-                            'sound_file': item_data.get('sound_file', "")
-                        })
-                    self.update_list()
+                    try:
+                        with open(settings["last_file"], 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                        self.items = []
+                        for item_data in data:
+                            self.items.append({
+                                'name': item_data['name'],
+                                'weight': float(item_data['weight']),
+                                'color': QColor(item_data['color']),
+                                'enabled': item_data.get('enabled', True),
+                                'sound_enable': item_data.get('sound_enable', False),
+                                'sound_file': item_data.get('sound_file', "")
+                            })
+                        self.update_list()
+                        items_loaded = True
+                    except Exception as e:
+                        print(f"Error loading last file: {e}")
             except Exception as e:
                 import traceback
                 traceback.print_exc()
                 QMessageBox.critical(self, "錯誤", f"載入失敗: {str(e)}")
-        else:
-             # Try loading autosave.json if no settings/last_file found
+        
+        # If items not loaded (settings missing, last_file missing, or load failed), try autosave
+        if not items_loaded:
              autosave_path = external_path("autosave.json")
              if os.path.exists(autosave_path):
                  print(f"DEBUG: Auto-loading {autosave_path}")
