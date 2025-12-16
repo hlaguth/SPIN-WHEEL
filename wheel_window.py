@@ -75,13 +75,16 @@ class WheelWindow(QWidget):
         
         self.last_pointer_index = -1
         self.last_sound_time = QTime.currentTime()
+        self.cumulative_angle = 0  # 累計旋轉角度（用於精確檢測邊界跨越）
+        self.last_tick_cumulative = 0  # 上次觸發 tick 時的累計角度
         
-        # Audio Initialization
-        self.tick_effect = QSoundEffect()
+        # Audio Initialization - Tick Sound Pool (8 instances for smooth playback)
+        self.tick_effect_pool = [QSoundEffect() for _ in range(8)]
+        self.tick_pool_index = 0
         self.tick_player = QMediaPlayer()
         self.tick_audio = QAudioOutput()
         self.tick_player.setAudioOutput(self.tick_audio)
-        self.using_mp3_tick = False # Flag for MP3 mode
+        self.using_mp3_tick = False
         
         self.finish_player = QMediaPlayer()
         self.finish_audio = QAudioOutput()
@@ -199,7 +202,7 @@ class WheelWindow(QWidget):
 
     def load_sounds(self):
         """載入音效資源 (支援 mp3/wav 混合模式)"""
-        # Tick Sound (WAV 使用 QSoundEffect, MP3 使用 QMediaPlayer)
+        # Tick Sound (WAV 使用 QSoundEffect Pool, MP3 使用 QMediaPlayer)
         tick_path = self.find_audio_file("tick")
         self.using_mp3_tick = False
         
@@ -208,15 +211,20 @@ class WheelWindow(QWidget):
                 self.using_mp3_tick = True
                 self.tick_player.setSource(QUrl.fromLocalFile(tick_path))
                 self.tick_audio.setVolume(1.0)
-                self.tick_effect.setSource(QUrl()) 
+                for effect in self.tick_effect_pool:
+                    effect.setSource(QUrl())
             else:
+                # WAV 使用 QSoundEffect Pool
                 self.using_mp3_tick = False
-                self.tick_effect.setSource(QUrl.fromLocalFile(tick_path))
-                self.tick_effect.setLoopCount(1)
-                self.tick_effect.setVolume(1.0) 
+                for effect in self.tick_effect_pool:
+                    effect.setSource(QUrl.fromLocalFile(tick_path))
+                    effect.setLoopCount(1)
+                    effect.setVolume(1.0)
                 self.tick_player.setSource(QUrl())
         else:
             self.tick_player.setSource(QUrl())
+            for effect in self.tick_effect_pool:
+                effect.setSource(QUrl())
 
         # Finish Sound (同樣混合模式)
         finish_path = self.find_audio_file("finish")
@@ -241,8 +249,9 @@ class WheelWindow(QWidget):
 
     def release_audio_locks(self):
         """釋放所有音效檔案鎖定 (用於匯入/刪除時)"""
-        self.tick_effect.stop()
-        self.tick_effect.setSource(QUrl())
+        for effect in self.tick_effect_pool:
+            effect.stop()
+            effect.setSource(QUrl())
         self.tick_player.stop()
         self.tick_player.setSource(QUrl())
         
@@ -320,16 +329,15 @@ class WheelWindow(QWidget):
         """設定旋轉角度並處理音效"""
         self._rotation_angle = angle
         
+        # 先處理音效邏輯
         if self.sound_enabled and not self.continuous_sound_enabled:
-            # 計算相對於轉盤的有效指針角度
+            # 計算相對於轉盤的有效指針角度（與 on_spin_finished 一致）
             if self.wheel_mode == "image":
-                # 圖片模式：統一邏輯：指針角度 = (90 + 旋轉角度 + 偏移量) % 360
-                # 基準 90 (北方) 確保預設指向頂部。
-                effective_angle = (90 + angle + self.pointer_angle_offset) % 360
+                # 圖片模式：90 為基準，不含視覺偏移量
+                effective_angle = (90 + angle) % 360
             else:
-                # 經典模式：轉盤旋轉。
-                # 有效角度 = (指針角度 - 旋轉角度) % 360
-                effective_angle = (self.classic_pointer_angle - angle) % 360
+                # 經典模式：需要負號轉換
+                effective_angle = (-self.classic_pointer_angle - angle) % 360
                 
             total_weight = sum(item['weight'] for item in self.items)
             if total_weight > 0:
@@ -348,38 +356,39 @@ class WheelWindow(QWidget):
                         ms_diff = self.last_sound_time.msecsTo(current_time)
                         self.last_sound_time = current_time
                         
-                        if ms_diff < 1:
-                            ms_diff = 1
-                        
-                        freq = 400 + int(8000 / ms_diff)
+                        freq = 400 + int(8000 / max(ms_diff, 1))
                         if freq > 1500:
                             freq = 1500
                         if freq < 200:
                             freq = 200
                         
-                        self.play_tick_sound(freq)
+                        # 跳過即將停止時的 tick（避免最後多放一次）
+                        if self.rotation_speed > self.deceleration:
+                            self.play_tick_sound(freq)
                     else:
                         self.last_sound_time = QTime.currentTime()
                         
                     self.last_pointer_index = found_index
+        
+        # 更新畫面（異步，不會卡頓）
         self.update()
 
     def play_tick_sound(self, freq=600):
-        """播放滴答音效"""
+        """播放滴答音效 (WAV 使用 winsound 達到最低延遲)"""
         if self.sound_enabled:
              if self.using_mp3_tick:
-                 # MP3 Mode (QMediaPlayer)
+                 # MP3 Mode (QMediaPlayer) - 使用 setPosition(0) 重置播放
                  if self.tick_player.source().isValid():
                      if self.tick_player.playbackState() == QMediaPlayer.PlayingState:
-                         self.tick_player.stop()
-                     self.tick_player.play()
+                         self.tick_player.setPosition(0)  # 重置到開頭
+                     else:
+                         self.tick_player.play()
              else:
-                 # WAV Mode (QSoundEffect)
-                 if self.tick_effect.source().isValid():
-                     # 確保停止再播放，避免狀態未重置
-                     if self.tick_effect.isPlaying():
-                         self.tick_effect.stop()
-                     self.tick_effect.play()
+                 # WAV Mode - 使用 QSoundEffect Pool
+                 effect = self.tick_effect_pool[self.tick_pool_index]
+                 self.tick_pool_index = (self.tick_pool_index + 1) % len(self.tick_effect_pool)
+                 if effect.source().isValid():
+                     effect.play()  # 不 stop，直接播放下一個實例
 
     def play_finish_sound(self, custom_path=None):
         """播放結束音效 (支援自訂路徑)"""
@@ -392,6 +401,11 @@ class WheelWindow(QWidget):
         # 如果沒有自訂音效，使用預設音效
         if not target_path:
             target_path = getattr(self, 'default_finish_path', None)
+        
+        # 強制停止 tick 音效
+        for effect in self.tick_effect_pool:
+            effect.stop()
+        self.tick_player.stop()
             
         # 強制停止循環音效 (確保切斷)
         self.loop_player.stop()
@@ -411,20 +425,33 @@ class WheelWindow(QWidget):
         """開始旋轉"""
         self.result_text = ""
         self.spin_speed_mult = speed_multiplier
-        # 應用使用者設定的旋轉速度倍率
-        base_speed = random.uniform(20.0, 35.0)
-        self.rotation_speed = base_speed * speed_multiplier * self.spin_speed_multiplier
-        # 減速邏輯讓「轉速越快，持續時間越短」
-        # 如果倍率 > 1 (快)，我們希望它更快停止 -> 更高的減速率。
-        # 如果倍率 < 1 (慢)，我們希望它轉得更久/更慢 -> 更低的減速率。 
-        # 減速率隨 速度^2 變化，則持續時間 ~ 速度 / 速度^2 ~ 1/速度。
-        # 這給出一種線性反比關係（速度增加時持續時間減少）。
         
-        base_decel = random.uniform(0.15, 0.25)
+        # 重置 tick 狀態，防止開始時多播放
+        self.last_pointer_index = -1
+        self.cumulative_angle = 0
+        self.last_tick_cumulative = 0
         
-        # 依倍率平方縮放減速率，有效縮短較高速度下的旋轉時間。
-        total_multiplier = speed_multiplier * self.spin_speed_multiplier
-        self.deceleration = base_decel * (total_multiplier ** 2.0)
+        # 新物理模型：
+        # 1. 速度倍率直接影響旋轉速度 (10x = 10倍速)
+        # 2. 保證至少轉 2 圈 (720度) + 隨機額外角度
+        total_mult = speed_multiplier * self.spin_speed_multiplier
+        
+        # 基礎速度 (度/幀)
+        BASE_SPEED = 10.0  # 1x 時的基礎速度
+        self.rotation_speed = BASE_SPEED * total_mult
+        
+        # 目標旋轉距離：至少 2 圈 + 隨機 0~1 圈
+        target_distance = 720.0 + random.uniform(0, 360.0)
+        
+        # 物理公式：v² = v0² - 2as
+        # 停止時 v=0，所以 0 = v0² - 2as
+        # a = v0² / (2s)
+        v0 = self.rotation_speed
+        self.deceleration = (v0 * v0) / (2.0 * target_distance)
+        
+        # 確保減速率有最小值，避免除以零或無限轉動
+        if self.deceleration < 0.01:
+            self.deceleration = 0.01
         
         self.is_spinning = True
         
@@ -441,6 +468,7 @@ class WheelWindow(QWidget):
             return
 
         new_angle = self._rotation_angle + self.rotation_speed
+        self.cumulative_angle += self.rotation_speed  # 累計旋轉角度
         self.set_rotation_angle(new_angle % 360)
         
         self.rotation_speed -= self.deceleration
@@ -960,10 +988,16 @@ class WheelWindow(QWidget):
     
     def closeEvent(self, event):
         """視窗關閉事件"""
+        # 停止旋轉動畫
+        self.timer.stop()
+        self.is_spinning = False
+        
         # 確保關閉時停止所有音效
         self.loop_player.stop()
         self.finish_player.stop()
-        self.tick_effect.stop()
+        for effect in self.tick_effect_pool:
+            effect.stop()
+        self.tick_player.stop()
             
         self.window_closed.emit()
         super().closeEvent(event)
