@@ -7,6 +7,6 @@ def main():
     config_window = ConfigWindow()
     config_window.show()
     sys.exit(app.exec())
-
+#442
 if __name__ == "__main__":
     main()
